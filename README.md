@@ -46,16 +46,15 @@ FeatureCapabilities → EventSharing-Subscribe Typ 20/21) und liest dann:
 Directory-Download beantwortet, ist Gegenstand des Probe-Laufs (M4) —
 siehe Status unten.
 
-## Status
+## Status (alles am echten Gurt verifiziert, 2026-08-25)
 
-- ✅ Transport, Watch-Bootstrap, Live-Streams — **am echten Gurt verifiziert**
-  (2026-08-25): HR-Alerts Typ 20, Running Measurement Typ 21, Realtime-HR
-- ✅ Erkenntnis aus dem Probe-Lauf: klassischer GFDI-File-Transfer (5002)
-  wird vom HRM 600 mit UNSUPPORTED abgelehnt; der Gurt nutzt das
-  protobuf-basierte **FileSyncService**-Protokoll (V2)
-- 🧪 `probe-files`/`sync` implementieren jetzt den V2-Weg (FileListRequest →
-  FileRequest → deflate-Stream über ML-Service 0x2018) — Live-Verifikation
-  am Gurt ausstehend
+- ✅ Live-Streams: HR-Alerts Typ 20, Running Measurement Typ 21, Realtime-HR
+- ✅ `sync`: kompletter Puffer-Download über das protobuf-basierte
+  **FileSyncService**-Protokoll (V2) — FileListRequest → FileRequest →
+  deflate-Stream über ML-Service 0x2018. Der klassische GFDI-File-Transfer
+  (5002) wird vom HRM 600 mit UNSUPPORTED abgelehnt.
+- ✅ `decode`: 82 685 HR-Samples über 17 Tage mit absoluten Timestamps
+  rekonstruiert (Event-Clock-Anker über die File-IDs kalibriert)
 - `sync` markiert Dateien **nicht** als „synced" — die Garmin-App bekommt
   den Puffer weiterhin
 

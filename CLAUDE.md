@@ -62,8 +62,20 @@ zuerst dort nachsehen (`gfdi_rx`-Events mit `decoded_hex`).
   (`[counter][offset:4][total:4][chunk:4][data]`); ohne per-Chunk-ACK
   (ProtobufStatus-Format, alle 5 s Retransmit) schickt der Gurt Chunk 2 nie.
   Reassembly + ACK: `FileSyncV2.on_transport_chunk`.
-- **Noch unverifiziert am Gurt**: FileRequest → Handle → Stream-Download
-  über Service 0x2018 (Schritt nach dem Listing).
+- **Download + Decode end-to-end verifiziert** (2026-08-25): 26 Dateien
+  `STORE_AND_FORWARD_HR_DATA_FIT`, daraus 82 685 HR-Samples (08.–25.08.).
+- **Zeitmodell der Store-and-Forward-Dateien** (wichtig!): Die FIT-Dateien
+  enthalten NUR `hr`-Messages (kein file_id, keine timestamp_correlation);
+  `garmin-fit-sdk` mit `merge_heart_rates=False` lesen, sonst
+  KeyError('record_mesgs'). Samples tragen `event_timestamp` (Geräte-Uhr
+  seit Batterie-Einlage, 1/1024 s). Echtzeit-Anker: bei sauber
+  finalisierten Dateien ist `id1>>32` der Garmin-Timestamp des LETZTEN
+  Samples ⇒ `C = id_ts − ev_last` (über Wochen sub-sekunden-stabil).
+  Ring-Buffer-Dateien tragen stattdessen Flush-Timestamps, und einzelne
+  Slots haben komplett falsche id-Zeiten (Slot-Reuse) — deshalb wird C als
+  größter Cluster über alle Dateien kalibriert
+  (`fitdecode.calibrate_event_anchor`) und NIE der einzelne id-Timestamp
+  einer Datei geglaubt. `id2 & 0xFFFFFFFF` = Dateigröße in Bytes.
 - `decode_heart_rate` (Feld 1 in Feld-1013-Alerts) ist eine plausible, aber
   unverifizierte Annahme — Feld-1013-Payloads im Probe-Log zeigen Muster
   `08 <hr> 10 00 18 <varint>` (Feld 1 ≈ 78–80 bpm, plausibel).
