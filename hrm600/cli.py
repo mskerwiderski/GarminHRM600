@@ -217,24 +217,44 @@ async def cmd_sync(args: argparse.Namespace) -> None:
 
 
 async def cmd_decode(args: argparse.Namespace) -> None:
-    from .fitdecode import extract_hr_series, read_fit, write_hr_csv
+    from .fitdecode import (
+        collect_store_and_forward,
+        extract_hr_series,
+        read_fit,
+        write_hr_csv,
+    )
 
+    decoded = []
+    series = []
     for path in args.files:
-        messages, errors = read_fit(path)
+        try:
+            messages, errors = read_fit(path)
+        except Exception as e:
+            print(f"# {path}\n  not decodable: {e}")
+            continue
         print(f"# {path}")
         for key in sorted(messages):
             print(f"  {key:32s} {len(messages[key])}")
         if errors:
             print(f"  errors: {errors}")
-        series = extract_hr_series(messages)
-        if series:
-            first, last = series[0][0], series[-1][0]
-            print(f"  HR samples: {len(series)}  ({first.isoformat()} .. {last.isoformat()})")
-            if args.hr_csv:
-                write_hr_csv(series, args.hr_csv)
-                print(f"  wrote {args.hr_csv}")
-        else:
-            print("  no HR samples found")
+        decoded.append((path, messages))
+        series.extend(extract_hr_series(messages))
+
+    saf_series, anchor = collect_store_and_forward(decoded)
+    if saf_series:
+        print(f"\n# Store-and-forward HR: {len(saf_series)} samples, "
+              f"event-clock anchor C={anchor:.1f}")
+        series.extend(saf_series)
+
+    series.sort(key=lambda row: row[0])
+    if not series:
+        print("# No HR samples found")
+        return
+    first, last = series[0][0], series[-1][0]
+    print(f"# Total: {len(series)} HR samples  ({first.isoformat()} .. {last.isoformat()})")
+    if args.hr_csv:
+        write_hr_csv(series, args.hr_csv)
+        print(f"# Wrote {args.hr_csv}")
 
 
 def parse_services(value: str) -> list[int]:
