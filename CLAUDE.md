@@ -1,87 +1,88 @@
 # CLAUDE.md — GarminHRM600
 
-CLI (`hrm600`) für direkten BLE-Zugriff auf den Garmin HRM 600.
-Python ≥3.12, bleak, garmin-fit-sdk. UI-Sprache: **Englisch**.
-README + `docs/` sind englisch (public Repo); diese Datei bleibt deutsch.
+CLI (`hrm600`) for direct BLE access to the Garmin HRM 600.
+Python ≥3.12, bleak, garmin-fit-sdk. Everything in this repo is English
+(public repo), including this file.
 
-## Architektur
+## Architecture
 
 ```
-hrm600/crc.py           Garmin CRC16 (auch FIT)
-hrm600/cobs.py          Garmin-COBS-Framing (0x00-delimitiert)
-hrm600/multilink.py     Multi-Link: UUIDs, Register-Request/Response
-hrm600/gfdi.py          GFDI-Envelope, kompakte Smart-Frames (0x..39/0x..3a)
-hrm600/protobuf.py      Schema-lose Protobuf-Helfer
-hrm600/eventsharing.py  Subscribe/Alert-Payloads + Decoder (Typ 20/21/22/23)
-hrm600/bootstrap.py     Captured fenix-8-Bootstrap-Frames (Bytes sind kanonisch!)
-hrm600/client.py        Hrm600Client: bleak, Notify-Pump, Watch-Emulation
-hrm600/filetransfer.py  Download-Zustandsautomat (5002/5004/5000)
-hrm600/fitdecode.py     FIT → HR-Zeitreihe (timestamp_16-Auflösung)
-hrm600/cli.py           argparse-Subcommands
+hrm600/crc.py           Garmin CRC16 (also used by FIT)
+hrm600/cobs.py          Garmin COBS framing (0x00-delimited)
+hrm600/multilink.py     Multi-Link: UUIDs, register request/response
+hrm600/gfdi.py          GFDI envelope, compact Smart frames (0x..39/0x..3a)
+hrm600/protobuf.py      schema-less protobuf helpers
+hrm600/eventsharing.py  subscribe/alert payloads + decoders (types 20/21/22/23)
+hrm600/bootstrap.py     captured fenix 8 bootstrap frames (bytes are canonical!)
+hrm600/client.py        Hrm600Client: bleak, notify pump, watch emulation
+hrm600/filetransfer.py  classic download state machine (5002/5004/5000)
+hrm600/fitdecode.py     FIT → HR time series (event-clock anchoring)
+hrm600/cli.py           argparse subcommands
 ```
 
-Protokollwissen: `docs/gfdi-filetransfer.md` (File-Transfer, aus Gadgetbridge
-destilliert) und upstream `protocol.md` im openrd-Repo (Live-Pfad).
+Protocol knowledge: `docs/gfdi-filetransfer.md` (file transfer, distilled
+from Gadgetbridge) and the upstream `protocol.md` in the openrd repo (live
+path).
 
-## Nicht verhandelbar
+## Non-negotiable
 
-- **Das Repo ist PUBLIC** (seit 2026-08-25, MIT). Niemals Gesundheitsdaten
-  committen: `hr.csv`, `captures/`, `downloads/`, Exports sind gitignored
-  und müssen es bleiben. Die History wurde per filter-repo von hr.csv
-  bereinigt — nicht erneut verschmutzen. (Das frühere private Archiv-Repo
-  wurde am 2026-08-25 gelöscht.)
-- Die **captured Frames in `bootstrap.py` niemals „verbessern"** — exakte
-  Bytes inkl. Counter sind gegen den echten Gurt validiert. Response-Frames
-  sind `0x..3a` mit gespiegeltem Request-Counter, Requests `0x..39`;
-  Verwechslung führt zu „verbindet, aber keine Typ-21-Subscription".
-- Gadgetbridge ist AGPL: nur Protokollfakten übernehmen, **keinen Code**.
-- openrd ist MIT: adaptierter Code behält den Attributionshinweis im Header.
+- **This repo is PUBLIC** (since 2026-08-25, MIT). Never commit health
+  data: `hr.csv`, `captures/`, `downloads/`, and exports are gitignored and
+  must stay that way. The history was cleaned of hr.csv via filter-repo —
+  do not pollute it again. (The former private archive repo was deleted on
+  2026-08-25.)
+- **Never "improve" the captured frames in `bootstrap.py`** — the exact
+  bytes including counters are validated against the real strap. Response
+  frames are `0x..3a` echoing the request counter, requests are `0x..39`;
+  mixing them up yields "connects, but no type-21 subscription".
+- Gadgetbridge is AGPL: take protocol facts only, **never code**.
+- openrd is MIT: adapted code keeps the attribution notice in its header.
 
-## Testen
+## Testing
 
 ```bash
-.venv/bin/pytest -q          # offline (Codecs, Parser, Zustandsautomat)
+.venv/bin/pytest -q          # offline (codecs, parsers, state machine)
 .venv/bin/ruff check hrm600 tests
 ```
 
-Live-Tests brauchen den Gurt: getragen, kein anderes Central verbunden
-(Uhr/Handy-App außer Reichweite oder BT aus). Reihenfolge:
+Live tests need the strap: worn, with no other central connected (watch and
+phone app out of range or Bluetooth off). Order:
 `hrm600 scan` → `info` → `live --duration 60` → `probe-files`.
-Alle Läufe loggen JSONL nach `captures/` (gitignored) — bei Protokollfragen
-zuerst dort nachsehen (`gfdi_rx`-Events mit `decoded_hex`).
+Every run logs JSONL to `captures/` (gitignored) — for protocol questions
+look there first (`gfdi_rx` events with `decoded_hex`).
 
-## Offene Punkte / Wissensstand
+## Open items / current knowledge
 
-- **Live-Streams am Gurt verifiziert** (Probe-Lauf 2026-08-25,
-  `captures/hrm600-probe-20260825T110706Z.jsonl`): kompletter Bootstrap,
-  Typ-20-HR, Typ-21-RD, Realtime-HR.
-- **Klassischer GFDI-File-Transfer widerlegt**: 5002/5031 → UNSUPPORTED
-  (0x02), 5030 SYSTEM_EVENT → ACK. Der HRM 600 nutzt das
-  **FileSyncService-V2-Protokoll** (Smart-Feld 43 + deflate-Stream über
-  ML-Service 0x2018), implementiert in `hrm600/filesync.py`, dokumentiert in
+- **Live streams verified against the strap** (probe run 2026-08-25,
+  `captures/hrm600-probe-20260825T110706Z.jsonl`): full bootstrap,
+  type-20 HR, type-21 RD, realtime HR.
+- **Classic GFDI file transfer disproven**: 5002/5031 → UNSUPPORTED
+  (0x02), 5030 SYSTEM_EVENT → ACK. The HRM 600 uses the
+  **FileSyncService V2 protocol** (Smart field 43 + deflate stream over
+  ML service 0x2018), implemented in `hrm600/filesync.py`, documented in
   `docs/gfdi-filetransfer.md`.
-- **V2-Listing am Gurt bestätigt** (2. Probe-Lauf,
-  `captures/hrm600-probe-20260825T112101Z.jsonl`): FileListRequest als
-  kompakter `0x..39`-Frame wird beantwortet — Dateityp
-  `STORE_AND_FORWARD_HR_DATA_FIT` (code 0), je ~10247 B = der 24h-Puffer.
-  Antworten > ~495 B kommen **gechunkt** als `0x2c`-Frames
-  (`[counter][offset:4][total:4][chunk:4][data]`); ohne per-Chunk-ACK
-  (ProtobufStatus-Format, alle 5 s Retransmit) schickt der Gurt Chunk 2 nie.
+- **V2 listing confirmed on the strap** (2nd probe run,
+  `captures/hrm600-probe-20260825T112101Z.jsonl`): a FileListRequest sent
+  as a compact `0x..39` frame is answered — file type
+  `STORE_AND_FORWARD_HR_DATA_FIT` (code 0), ~10247 B each = the 24h
+  buffer. Responses > ~495 B arrive **chunked** as `0x2c` frames
+  (`[counter][offset:4][total:4][chunk:4][data]`); without a per-chunk ACK
+  (ProtobufStatus format, 5 s retransmit) the strap never sends chunk 2.
   Reassembly + ACK: `FileSyncV2.on_transport_chunk`.
-- **Download + Decode end-to-end verifiziert** (2026-08-25): 26 Dateien
-  `STORE_AND_FORWARD_HR_DATA_FIT`, daraus 82 685 HR-Samples (08.–25.08.).
-- **Zeitmodell der Store-and-Forward-Dateien** (wichtig!): Die FIT-Dateien
-  enthalten NUR `hr`-Messages (kein file_id, keine timestamp_correlation);
-  `garmin-fit-sdk` mit `merge_heart_rates=False` lesen, sonst
-  KeyError('record_mesgs'). Samples tragen `event_timestamp` (Geräte-Uhr
-  seit Batterie-Einlage, 1/1024 s). Echtzeit-Anker: bei sauber
-  finalisierten Dateien ist `id1>>32` der Garmin-Timestamp des LETZTEN
-  Samples ⇒ `C = id_ts − ev_last` (über Wochen sub-sekunden-stabil).
-  Ring-Buffer-Dateien tragen stattdessen Flush-Timestamps, und einzelne
-  Slots haben komplett falsche id-Zeiten (Slot-Reuse) — deshalb wird C als
-  größter Cluster über alle Dateien kalibriert
-  (`fitdecode.calibrate_event_anchor`) und NIE der einzelne id-Timestamp
-  einer Datei geglaubt. `id2 & 0xFFFFFFFF` = Dateigröße in Bytes.
-- `decode_heart_rate` (Feld 1 in Feld-1013-Alerts) ist eine plausible, aber
-  unverifizierte Annahme — Feld-1013-Payloads im Probe-Log zeigen Muster
-  `08 <hr> 10 00 18 <varint>` (Feld 1 ≈ 78–80 bpm, plausibel).
+- **Download + decode verified end-to-end** (2026-08-25): 26 files of
+  `STORE_AND_FORWARD_HR_DATA_FIT`, yielding 82,685 HR samples (Aug 08–25).
+- **Time model of the store-and-forward files** (important!): the FIT files
+  contain ONLY `hr` messages (no file_id, no timestamp_correlation); read
+  with `garmin-fit-sdk` and `merge_heart_rates=False`, otherwise
+  KeyError('record_mesgs'). Samples carry `event_timestamp` (device clock
+  since battery insertion, 1/1024 s). Real-time anchor: for cleanly
+  finalized files `id1>>32` is the Garmin timestamp of the LAST sample ⇒
+  `C = id_ts − ev_last` (sub-second stable over weeks). Ring-buffer files
+  carry flush timestamps instead, and some slots have entirely wrong id
+  times (slot reuse) — therefore C is calibrated as the largest cluster
+  across all files (`fitdecode.calibrate_event_anchor`) and the id
+  timestamp of any single file is NEVER trusted.
+  `id2 & 0xFFFFFFFF` = file size in bytes.
+- `decode_heart_rate` (field 1 in field-1013 alerts) is a plausible but
+  unverified assumption — field-1013 payloads in the probe log show the
+  pattern `08 <hr> 10 00 18 <varint>` (field 1 ≈ 78–80 bpm, plausible).
