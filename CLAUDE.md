@@ -28,8 +28,8 @@ destilliert) und upstream `protocol.md` im openrd-Repo (Live-Pfad).
 - **Das Repo ist PUBLIC** (seit 2026-08-25, MIT). Niemals Gesundheitsdaten
   committen: `hr.csv`, `captures/`, `downloads/`, Exports sind gitignored
   und müssen es bleiben. Die History wurde per filter-repo von hr.csv
-  bereinigt — nicht erneut verschmutzen. Altes privates Repo liegt als
-  `GarminHRM600-private-archive` auf GitHub (kann Michael manuell löschen).
+  bereinigt — nicht erneut verschmutzen. (Das frühere private Archiv-Repo
+  wurde am 2026-08-25 gelöscht.)
 - Die **captured Frames in `bootstrap.py` niemals „verbessern"** — exakte
   Bytes inkl. Counter sind gegen den echten Gurt validiert. Response-Frames
   sind `0x..3a` mit gespiegeltem Request-Counter, Requests `0x..39`;
