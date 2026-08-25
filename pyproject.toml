@@ -1,0 +1,34 @@
+[project]
+name = "hrm600"
+version = "0.1.0"
+description = "CLI for direct BLE access to the Garmin HRM 600 (live HR/Running Dynamics, stored HR log)"
+requires-python = ">=3.12"
+dependencies = [
+    # upper bound: bleak 3.x is the API the transport was validated against;
+    # a major bump may change scanner/client signatures
+    "bleak>=3.0.2,<4",
+    # FIT SDK versioning follows Garmin's 21.x line; pin below a major jump
+    "garmin-fit-sdk>=21.158,<22",
+]
+
+[project.scripts]
+hrm600 = "hrm600.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "ruff>=0.6,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hrm600"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

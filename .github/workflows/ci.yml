@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --quiet -e . pytest ruff
+          python -c "import hrm600; print('hrm600', hrm600.__version__)"
+
+      - name: Lint (ruff E9,F)
+        run: |
+          ruff check --select E9,F hrm600 tests
+          echo "ruff checked $(find hrm600 tests -name '*.py' | wc -l) files"
+
+      - name: Tests
+        run: |
+          pytest -v 2>&1 | tee pytest.log
+          grep -E "[0-9]+ passed" pytest.log || (echo "no tests ran" && exit 1)
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
