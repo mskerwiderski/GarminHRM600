@@ -165,3 +165,71 @@ def test_failed_file_response_advances_queue() -> None:
 
     assert len(fs.failed) == 1
     assert fs.requested is not None and fs.requested.id1 == 2
+
+
+def test_compact_status_ack_matches_captured_watch_ack() -> None:
+    from hrm600.gfdi import build_compact_status_ack
+
+    # the fenix 8 acked the strap's 0x8132 session frame with exactly this
+    assert build_compact_status_ack(0x32, sequence=1).hex() == "09000081ba13009de9"
+
+
+def make_chunked_frames(counter: int, smart_payload: bytes, chunk_size: int) -> list[dict]:
+    from hrm600.gfdi import build_gfdi_message
+
+    frames = []
+    for off in range(0, len(smart_payload), chunk_size):
+        chunk = smart_payload[off:off + chunk_size]
+        body = (
+            struct.pack("<H", counter)
+            + struct.pack("<III", off, len(smart_payload), len(chunk))
+            + chunk
+        )
+        frames.append(parse_gfdi_message(build_gfdi_message(0x842C, body)))
+    return frames
+
+
+def test_chunked_transport_reassembles_and_acks() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+
+    file_raw = make_file_raw(7, 8, 123, 0, "STORE_AND_FORWARD_HR_DATA_FIT")
+    listing = smart_with_file_sync(field_len(10, field_len(4, file_raw)))
+    frames = make_chunked_frames(0x01F2, listing, chunk_size=20)
+    assert len(frames) > 2
+
+    fs.on_gfdi_frame(frames[0])
+    fs.on_gfdi_frame(frames[0])  # retransmit of an un-acked chunk
+    for frame in frames[1:]:
+        fs.on_gfdi_frame(frame)
+
+    assert fs.listing_complete is True
+    assert len(fs.files) == 1
+    assert fs.files[0].type_name == "STORE_AND_FORWARD_HR_DATA_FIT"
+
+    acks = [gfdi for label, gfdi in client.gfdi if label.startswith("Compact chunk ACK")]
+    assert len(acks) == len(frames) + 1  # one per chunk plus the duplicate
+    parsed = parse_gfdi_message(acks[0])
+    # [orig=5044][ACK][counter][offset:4][kept][no_error]
+    expected = (
+        struct.pack("<H", 5044) + b"\x00" + struct.pack("<H", 0x01F2)
+        + struct.pack("<I", 0) + b"\x00\x00"
+    )
+    assert parsed["body"] == expected
+
+
+def test_type_name_propagates_across_entries_and_pages() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+
+    named = make_file_raw(1, 1, 10, 0, "STORE_AND_FORWARD_HR_DATA_FIT")
+    unnamed = make_file_raw(2, 2, 10, 0, None)
+    page1 = smart_with_file_sync(
+        field_len(10, field_varint(2, 5) + field_len(4, named) + field_len(4, unnamed))
+    )
+    fs.on_gfdi_frame(make_compact_frame(page1))
+    page2 = smart_with_file_sync(field_len(10, field_len(4, make_file_raw(3, 3, 10, 0, None))))
+    fs.on_gfdi_frame(make_compact_frame(page2))
+
+    assert [f.type_name for f in fs.files] == ["STORE_AND_FORWARD_HR_DATA_FIT"] * 3
+    assert fs.listing_complete is True

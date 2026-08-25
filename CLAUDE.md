@@ -53,12 +53,17 @@ zuerst dort nachsehen (`gfdi_rx`-Events mit `decoded_hex`).
   (0x02), 5030 SYSTEM_EVENT → ACK. Der HRM 600 nutzt das
   **FileSyncService-V2-Protokoll** (Smart-Feld 43 + deflate-Stream über
   ML-Service 0x2018), implementiert in `hrm600/filesync.py`, dokumentiert in
-  `docs/gfdi-filetransfer.md`. **V2 am Gurt noch unverifiziert** — nächster
-  Schritt: `hrm600 probe-files` erneut laufen lassen.
-- Falls V2 nicht antwortet: Garmin-Connect-Sync per iOS-BT-Logging-Profil +
-  PacketLogger mitschneiden und Ablauf vergleichen. Unklar ist v. a., ob die
-  FileList-Anfrage als kompakter `0x..39`-Frame korrekt geframt ist oder ein
-  anderes Framing (z. B. `0x2b` mit Transport-Header) braucht.
+  `docs/gfdi-filetransfer.md`.
+- **V2-Listing am Gurt bestätigt** (2. Probe-Lauf,
+  `captures/hrm600-probe-20260825T112101Z.jsonl`): FileListRequest als
+  kompakter `0x..39`-Frame wird beantwortet — Dateityp
+  `STORE_AND_FORWARD_HR_DATA_FIT` (code 0), je ~10247 B = der 24h-Puffer.
+  Antworten > ~495 B kommen **gechunkt** als `0x2c`-Frames
+  (`[counter][offset:4][total:4][chunk:4][data]`); ohne per-Chunk-ACK
+  (ProtobufStatus-Format, alle 5 s Retransmit) schickt der Gurt Chunk 2 nie.
+  Reassembly + ACK: `FileSyncV2.on_transport_chunk`.
+- **Noch unverifiziert am Gurt**: FileRequest → Handle → Stream-Download
+  über Service 0x2018 (Schritt nach dem Listing).
 - `decode_heart_rate` (Feld 1 in Feld-1013-Alerts) ist eine plausible, aber
   unverifizierte Annahme — Feld-1013-Payloads im Probe-Log zeigen Muster
   `08 <hr> 10 00 18 <varint>` (Feld 1 ≈ 78–80 bpm, plausibel).

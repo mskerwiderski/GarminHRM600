@@ -125,6 +125,38 @@ def build_compact_eventsharing_message(
     )
 
 
+def build_compact_status_ack(orig_kind: int, sequence: int) -> bytes:
+    """Compact RESPONSE (kind 0x00) generic ACK: body = [orig_type:2][status=ACK].
+
+    orig_type is the 5000-mapped id of the acked compact frame's kind.
+    Matches the captured watch ack 09000081ba13009de9 (ack for kind 0x32).
+    """
+    msg_type = 0x8000 | (sequence << 8)
+    return build_gfdi_message(msg_type, struct.pack("<H", 5000 + orig_kind) + b"\x00")
+
+
+def build_compact_protobuf_status_ack(
+    orig_kind: int,
+    counter: int,
+    data_offset: int,
+    sequence: int,
+) -> bytes:
+    """Compact per-chunk ACK for a partial protobuf transport frame.
+
+    Body layout follows the GFDI ProtobufStatusMessage:
+    [orig_type:2][status=ACK][request_id:2][data_offset:4][kept=0][no_error=0]
+    """
+    body = (
+        struct.pack("<H", 5000 + orig_kind)
+        + b"\x00"
+        + struct.pack("<H", counter)
+        + struct.pack("<I", data_offset)
+        + b"\x00\x00"
+    )
+    msg_type = 0x8000 | (sequence << 8)
+    return build_gfdi_message(msg_type, body)
+
+
 def parse_protobuf_transport(decoded: bytes) -> dict[str, Any] | None:
     gfdi = parse_gfdi_message(decoded)
     if gfdi is None or gfdi["type_id"] not in (5043, 5044):

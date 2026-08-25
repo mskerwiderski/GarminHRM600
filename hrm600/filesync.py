@@ -206,6 +206,10 @@ class FileSyncV2:
         self.failed: list[tuple[SyncFile, str]] = []
         self.used_service_ids: set[int] = set()
         self.exclude_synced = True
+        # counter -> {"total": int, "buf": bytearray} for chunked protobuf transport
+        self._chunks: dict[int, dict[str, Any]] = {}
+        # only the first file of a type carries the type name; propagate it
+        self._type_names: dict[int, str] = {}
 
     @property
     def idle(self) -> bool:
@@ -251,7 +255,7 @@ class FileSyncV2:
         if type_id & 0x8000:
             kind = type_id & 0xFF
             if kind in (0x2B, 0x2C) and len(body) >= 14:
-                smart_payload = body[14:]
+                smart_payload = self.on_transport_chunk(kind, body)
             elif len(body) >= 2:
                 smart_payload = body[2:]
         elif type_id in (5043, 5044) and len(body) >= 14:
@@ -263,10 +267,54 @@ class FileSyncV2:
             for event in parse_file_sync_service(sync_payload):
                 self.handle_event(event)
 
+    def on_transport_chunk(self, kind: int, body: bytes) -> bytes | None:
+        """Reassemble the chunked compact protobuf transport and ACK each chunk.
+
+        Body: [counter:2][data_offset:4][total_len:4][chunk_len:4][data].
+        The strap retransmits un-ACKed chunks and never sends the next one,
+        so the ACKs are required for any payload > ~495 bytes.
+        """
+        from .gfdi import build_compact_protobuf_status_ack
+
+        counter = struct.unpack("<H", body[0:2])[0]
+        offset, total, chunk_len = struct.unpack("<III", body[2:14])
+        data = body[14:14 + chunk_len]
+        if offset == 0 and chunk_len >= total:
+            # single-chunk frames flow fine without an ACK (proven live)
+            return data
+        _, sequence = self.client.next_compact_ids()
+        state = self._chunks.setdefault(counter, {"total": total, "buf": bytearray()})
+        if offset == len(state["buf"]):
+            state["buf"].extend(data)
+        elif offset < len(state["buf"]):
+            self.log(f"Duplicate chunk counter=0x{counter:04x} offset={offset} - re-acking")
+        else:
+            self.log(f"Chunk gap counter=0x{counter:04x}: got offset {offset}, have {len(state['buf'])}")
+            return None
+        self.client.enqueue_gfdi(
+            f"Compact chunk ACK counter=0x{counter:04x} offset={offset}",
+            build_compact_protobuf_status_ack(kind, counter, offset, sequence),
+        )
+        if len(state["buf"]) >= state["total"]:
+            del self._chunks[counter]
+            self.log(f"Reassembled {state['total']}B protobuf (counter=0x{counter:04x})")
+            return bytes(state["buf"])
+        return None
+
+    def resolve_type_names(self, files: list[SyncFile]) -> None:
+        for f in files:
+            if f.type_code is None:
+                continue
+            if f.type_name:
+                self._type_names[f.type_code] = f.type_name
+            else:
+                f.type_name = self._type_names.get(f.type_code)
+
     def handle_event(self, event: dict[str, Any]) -> None:
         kind = event["kind"]
         if kind == "file_list_response":
             files = event["files"]
+            self.resolve_type_names(files)
             self.files.extend(files)
             self.log(
                 f"File list page: {len(files)} file(s), cursor={event.get('cursor_id')}, "
@@ -278,6 +326,7 @@ class FileSyncV2:
             else:
                 self.listing_complete = True
         elif kind == "new_file_notification":
+            self.resolve_type_names(event["files"])
             for f in event["files"]:
                 self.log(f"New file notification: {f.describe()}")
                 self.files.append(f)
