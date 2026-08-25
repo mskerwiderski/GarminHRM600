@@ -333,7 +333,7 @@ class FileTransfer:
             self.on_download_status(status)
         elif orig == MSG_SUPPORTED_FILE_TYPES:
             self.supported_types = status.get("file_types", [])
-            self.log(f"Supported file types: {self.supported_types}")
+            self.log(f"Supported file types ({status['status_name']}): {self.supported_types}")
         elif orig == MSG_FILTER:
             self.log(f"Filter status: {status['status_name']} -> directory download")
             if self.current is None and self.directory is None:

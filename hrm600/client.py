@@ -162,8 +162,12 @@ class Hrm600Client:
         self.sent_core_feature_response_ack = False
         self.answered_watch_side_subscribe = False
         self.sent_strap_side_subscribe_requests = False
-        # optional observer for every parsed inbound GFDI frame (file transfer)
+        # optional observers (file transfer / file sync)
         self.on_gfdi_frame: Any = None
+        self.on_register_ok: Any = None
+        self.on_service_payload: Any = None
+        self.on_service_close: Any = None
+        self.pending_raw: list[tuple[str, bytes]] = []
 
     def now(self) -> float:
         return round(time.monotonic() - self.t0, 3)
@@ -221,6 +225,16 @@ class Hrm600Client:
         )
 
     async def pump_pending_actions(self) -> None:
+        if self.pending_raw:
+            label, data = self.pending_raw.pop(0)
+            self.log(f"[RAW TX] {label}: {data.hex()}")
+            try:
+                await self.client.write_gatt_char(CTRL_2820, data, response=True)
+                self.emit({"kind": "raw_tx", "label": label, "raw_hex": data.hex()})
+            except Exception as e:
+                self.emit({"kind": "raw_tx_error", "label": label, "error": str(e)},
+                          f"[TXFAIL] {label}: {e}")
+            return
         gfdi_handle = self.handle_by_service.get(1)
         if gfdi_handle is None or not self.pending_actions:
             return
@@ -283,6 +297,10 @@ class Hrm600Client:
         self.pending_actions.append(
             PendingGfdiAction(label=label, request_id=-1, gfdi_bytes=gfdi_bytes)
         )
+
+    def enqueue_raw(self, label: str, data: bytes) -> None:
+        """Queue a raw write to the Multi-Link control char (register, stream open)."""
+        self.pending_raw.append((label, data))
 
     async def send_to_gfdi(self, gfdi_handle: int, gfdi_msg: bytes, label: str) -> bool:
         encoded = cobs_encode_garmin(gfdi_msg)
@@ -351,12 +369,36 @@ class Hrm600Client:
                     "handle": handle,
                     "service_id": service_id,
                     "service_name": service_name,
-                    "payload_hex": payload.hex(),
+                    "payload_hex": payload.hex()[:80],
+                    "payload_len": len(payload),
                 },
-                f"ML handle={handle} {service_name} payload={payload.hex()}",
+                f"ML handle={handle} {service_name} len={len(payload)}",
             )
+            if self.on_service_payload is not None and service_id is not None:
+                try:
+                    self.on_service_payload(service_id, handle, payload)
+                except Exception as e:
+                    self.emit({"kind": "service_hook_error", "error": str(e)}, f"[HOOKFAIL] {e}")
 
     def handle_management(self, raw: bytes) -> None:
+        # CLOSE_HANDLE_RESP: [0x00][0x03][client_id:8][service:2][handle:1][status:1]
+        if len(raw) >= 14 and raw[1] == 0x03:
+            service_id = struct.unpack("<H", raw[10:12])[0]
+            ml_handle = raw[12]
+            status = raw[13]
+            self.service_by_handle.pop(ml_handle, None)
+            self.handle_by_service.pop(service_id, None)
+            self.emit(
+                {"kind": "service_close", "service_id": service_id, "handle": ml_handle,
+                 "status": status},
+                f"SERVICE CLOSE svc=0x{service_id:04x} handle={ml_handle} status={status}",
+            )
+            if self.on_service_close is not None:
+                try:
+                    self.on_service_close(service_id, ml_handle, status)
+                except Exception as e:
+                    self.emit({"kind": "service_hook_error", "error": str(e)}, f"[HOOKFAIL] {e}")
+            return
         parsed = parse_register_response(raw)
         if parsed is None:
             self.emit({"kind": "multilink_mgmt", "raw_hex": raw.hex()}, f"ML mgmt raw={raw.hex()}")
@@ -371,6 +413,11 @@ class Hrm600Client:
                 {"kind": "register_ok", "service_name": service_name, **parsed},
                 f"REGISTER OK {service_name} svc={service_id} handle={handle}",
             )
+            if self.on_register_ok is not None:
+                try:
+                    self.on_register_ok(service_id, handle)
+                except Exception as e:
+                    self.emit({"kind": "service_hook_error", "error": str(e)}, f"[HOOKFAIL] {e}")
         else:
             self.emit(
                 {"kind": "register_fail", "service_name": service_name, **parsed},

@@ -13,6 +13,7 @@ from pathlib import Path
 from bleak import BleakClient, BleakScanner
 
 from .client import DEFAULT_NAME_REGEX, Hrm600Client, read_device_info, resolve_target
+from .filesync import FileSyncV2
 from .filetransfer import FileTransfer
 from .gfdi import build_system_event
 
@@ -113,16 +114,27 @@ async def run_filetransfer(args: argparse.Namespace, download: bool) -> None:
 
     async with BleakClient(target, timeout=args.connect_timeout, pair=args.pair) as bleak_client:
         client = Hrm600Client(bleak_client, out_path, watch_init=not args.no_bootstrap)
-        ft = FileTransfer(client, log=lambda line: client.emit({"kind": "filetransfer", "note": line},
-                                                               f"[FT] {line}"))
-        client.on_gfdi_frame = ft.on_gfdi_frame
+
+        def note(line: str) -> None:
+            client.emit({"kind": "filesync", "note": line}, f"[FS] {line}")
+
+        if args.classic:
+            ft_classic = FileTransfer(client, log=note)
+            client.on_gfdi_frame = ft_classic.on_gfdi_frame
+            fs = None
+        else:
+            fs = FileSyncV2(client, log=note)
+            client.on_gfdi_frame = fs.on_gfdi_frame
+            client.on_register_ok = fs.on_register_ok
+            client.on_service_payload = fs.on_service_payload
+            client.on_service_close = fs.on_service_close
+
         await client.start()
         await client.register_multilink_services([6, 1])
         if not args.no_bootstrap:
             await client.send_initial_watch_events()
 
-        print(f"# Waiting {args.settle:.0f}s for bootstrap before file-transfer probe...",
-              file=sys.stderr)
+        print(f"# Waiting {args.settle:.0f}s for bootstrap before file sync...", file=sys.stderr)
         end = time.monotonic() + args.duration
         probe_at = time.monotonic() + args.settle
         probe_fired = False
@@ -135,26 +147,40 @@ async def run_filetransfer(args: argparse.Namespace, download: bool) -> None:
                 now = time.monotonic()
                 if not probe_fired and now >= probe_at:
                     probe_fired = True
-                    ft.request_supported_file_types()
                     if args.sync_ready:
                         client.enqueue_gfdi("SystemEvent SYNC_READY", build_system_event("SYNC_READY"))
-                    ft.start_directory_download()
-                if ft.directory is not None and not listing_printed:
-                    listing_printed = True
-                    print(f"\n# FIT directory: {len(ft.directory)} entries")
-                    for entry in ft.directory:
-                        print(f"  {entry.describe()}")
-                    print()
-                    if download:
-                        wanted = [
-                            e for e in ft.directory
-                            if e.is_fit and e.file_size > 0
-                            and (args.index is None or e.file_index in args.index)
-                        ]
-                        print(f"# Downloading {len(wanted)} FIT file(s)...", file=sys.stderr)
-                        ft.queue_downloads(wanted)
-                        queued_downloads = True
-                if listing_printed and (not download or (queued_downloads and ft.idle)):
+                    if fs is not None:
+                        fs.request_file_list(exclude_synced=not args.all_files)
+                    else:
+                        ft_classic.request_supported_file_types()
+                        ft_classic.start_directory_download()
+
+                if fs is not None:
+                    if fs.listing_complete and not listing_printed:
+                        listing_printed = True
+                        print(f"\n# File list: {len(fs.files)} file(s)")
+                        for f in fs.files:
+                            print(f"  {f.describe()}")
+                        print()
+                        if download:
+                            wanted = [
+                                f for f in fs.files
+                                if args.type is None
+                                or (f.type_name or "").lower() == args.type.lower()
+                            ]
+                            print(f"# Downloading {len(wanted)} file(s)...", file=sys.stderr)
+                            fs.queue_downloads(wanted)
+                            queued_downloads = True
+                    finished = listing_printed and (not download or (queued_downloads and fs.idle))
+                else:
+                    if ft_classic.directory is not None and not listing_printed:
+                        listing_printed = True
+                        print(f"\n# FIT directory: {len(ft_classic.directory)} entries")
+                        for entry in ft_classic.directory:
+                            print(f"  {entry.describe()}")
+                    finished = listing_printed
+
+                if finished:
                     if idle_since is None:
                         idle_since = now
                     elif now - idle_since >= args.linger:
@@ -165,16 +191,18 @@ async def run_filetransfer(args: argparse.Namespace, download: bool) -> None:
         finally:
             await client.stop()
 
-        if ft.directory is None:
-            print("# No directory received. See the JSONL log for raw responses "
-                  "(look for RESPONSE/NAK to msg 5002).", file=sys.stderr)
-        if download and ft.completed:
-            out_dir = args.out_dir
-            out_dir.mkdir(parents=True, exist_ok=True)
-            for entry, data in ft.completed:
-                path = out_dir / entry.filename()
-                path.write_bytes(data)
-                print(f"# Saved {path} ({len(data)}B)")
+        if not listing_printed:
+            print("# No file list received. See the JSONL log for raw frames.", file=sys.stderr)
+        if fs is not None:
+            for sync_file, reason in fs.failed:
+                print(f"# FAILED {sync_file.describe()}: {reason}", file=sys.stderr)
+            if download and fs.completed:
+                out_dir = args.out_dir
+                out_dir.mkdir(parents=True, exist_ok=True)
+                for sync_file, data in fs.completed:
+                    path = out_dir / sync_file.filename()
+                    path.write_bytes(data)
+                    print(f"# Saved {path} ({len(data)}B)")
         print("# Counts:", file=sys.stderr)
         for kind, count in client.counts.most_common():
             print(f"#   {kind}: {count}", file=sys.stderr)
@@ -207,10 +235,6 @@ async def cmd_decode(args: argparse.Namespace) -> None:
                 print(f"  wrote {args.hr_csv}")
         else:
             print("  no HR samples found")
-
-
-def parse_index_list(value: str) -> list[int]:
-    return [int(part, 0) for part in value.split(",") if part.strip()]
 
 
 def parse_services(value: str) -> list[int]:
@@ -276,16 +300,19 @@ def build_parser() -> argparse.ArgumentParser:
                        help="skip the watch-emulation bootstrap before probing")
         p.add_argument("--no-sync-ready", dest="sync_ready", action="store_false",
                        help="do not send the SYNC_READY system event")
+        p.add_argument("--all-files", action="store_true",
+                       help="list already-synced files too (omit the 0xa5a5 exclusion flags)")
+        p.add_argument("--classic", action="store_true",
+                       help="use the classic GFDI file transfer (known UNSUPPORTED on HRM 600)")
 
-    p_probe = sub.add_parser("probe-files",
-                             help="R&D: request supported file types and the FIT directory")
+    p_probe = sub.add_parser("probe-files", help="list the strap's files via the protobuf file sync")
     add_filetransfer_args(p_probe)
-    p_probe.set_defaults(func=cmd_probe_files, index=None)
+    p_probe.set_defaults(func=cmd_probe_files)
 
-    p_sync = sub.add_parser("sync", help="download the FIT directory and all FIT files (24h HR buffer)")
+    p_sync = sub.add_parser("sync", help="download the strap's files (24h HR buffer) as FIT")
     add_filetransfer_args(p_sync)
-    p_sync.add_argument("--index", type=parse_index_list, default=None,
-                        help="comma-separated file indexes to download (default: all FIT files)")
+    p_sync.add_argument("--type", default=None,
+                        help="only download files of this type name (e.g. monitor)")
     p_sync.add_argument("--out-dir", type=Path, default=Path("downloads"),
                         help="directory for downloaded .fit files")
     p_sync.set_defaults(func=cmd_sync)

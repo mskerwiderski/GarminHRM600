@@ -1,5 +1,11 @@
 # GFDI File Transfer — Protokollreferenz
 
+> **Probe-Ergebnis HRM 600 (2026-08-25):** Der Gurt beantwortet `5002
+> DOWNLOAD_REQUEST` und `5031 SUPPORTED_FILE_TYPES` mit Status
+> `UNSUPPORTED` (0x02); `5030 SYSTEM_EVENT` wird geACKt. Der klassische
+> Transfer (unten) gilt für den HRM 600 als widerlegt — er nutzt das
+> **protobuf-basierte FileSyncService-Protokoll** (letzter Abschnitt).
+
 Destilliert aus dem Gadgetbridge-Quellcode (AGPL — hier sind nur Protokoll-
 Fakten reimplementiert, kein Code übernommen). Stand: Gadgetbridge main,
 2026-08-25, `service/devices/garmin/`.
@@ -96,6 +102,48 @@ System-Event `SYNC_READY` (5030, Body `[8, 0]`).
 - Fetch beginnt immer mit Directory-Download (fileIndex 0), auch um das
   Gerät zum „Flushen" der Monitor-Daten zu bewegen.
 - Nach abgeschlossenem Sync: System-Event `SYNC_COMPLETE` (5030, Body `[0, 0]`).
+
+## Neues Sync-Protokoll: FileSyncService (V2, HRM 600)
+
+Quelle: Gadgetbridge `gdi_file_sync_service.proto`, `FileSyncServiceHandler.kt`,
+`GarminSupport.downloadFileFromServiceV2`, `CommunicatorV2.startTransfer`.
+Transport: Smart-Protobuf-Container, Feld **43** = `FileSyncService`, versendet
+als kompakter Frame (`0x..39`, Body `[counter:2][protobuf]`). Antworten kommen
+als kompakte `0x2b`/`0x2c`-Frames (Protobuf nach 14 Header-Bytes).
+
+`FileSyncService`-Felder:
+
+| Feld | Message |
+|---|---|
+| 1 | FileRequest `{file:File, unk2=24, unk3=0, unk4=0, unk5=15}` |
+| 2 | FileResponse `{status:1 (0=OK, 3=Fehler), handle:3}` |
+| 9 | FileListRequest `{cursor_id:1, start_page_id:2, flags1:4, flags2:5}` |
+| 10 | FileListResponse `{cursor_id:2, next_page_id:3, file:4 (repeated)}` |
+| 12 | NewFileNotification `{file:1 (repeated)}` |
+| 15 | FileSetFlags `{file:1 FileId, flags:2 FileId}` — markiert „synced" |
+
+- `File`: `{id:1 FileId, type:2 FileType, size:3, page_id:5}`;
+  `FileId`: `{id1:1 fixed64, id2:2 fixed64}`;
+  `FileType`: `{name:2 string, code:3}` (8=monitor, 9=sports; Name oft nur
+  beim ersten Eintrag eines Typs gesetzt).
+- `flags1/flags2` = FileId mit id1=id2=**42405** (0xa5a5): schließt bereits
+  synchronisierte Dateien aus. Ohne Flags kommt die komplette Historie.
+- Paginierung: `cursor_id` in der Response ⇒ sofort mit
+  `FileListRequest{cursor_id}` fortsetzen (Seiten à ~100).
+
+**Datei-Inhalt** kommt nicht über GFDI, sondern über einen eigenen
+Multi-Link-Service:
+
+1. `FileRequest` senden → `FileResponse` mit 16-bit-`handle`.
+2. Multi-Link-Service **0x2018** registrieren (Fallbacks: 0x4018, 0x6018,
+   0xa018, 0xc018, 0xe018), unreliable genügt.
+3. Auf den neuen Service-Handle schreiben: `[00 00 <handle:2 LE> 00 00]`.
+4. Erste Nachricht vom Gerät beginnt mit `00 00 00`, danach rohe
+   **deflate-komprimierte** Chunks (zlib inflate).
+5. Ende: Gerät schickt Handle-Management `CLOSE_HANDLE_RESP` (Typ 3):
+   `[00][03][client_id:8][service:2][handle:1][status:1]`.
+6. Optional `FileSetFlags` mit 0xa5a5 = „synced" markieren — **nicht tun**,
+   wenn die Garmin-App die Daten auch noch bekommen soll.
 
 ## System-Event-Ordinals (5030)
 

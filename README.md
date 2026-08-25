@@ -48,12 +48,16 @@ siehe Status unten.
 
 ## Status
 
-- ✅ Transport, Watch-Bootstrap, Live-Streams (offline gegen validierte
-  Referenz-Captures getestet; Live-Verifikation mit Gurt ausstehend)
-- 🧪 `probe-files`/`sync`: Protokoll implementiert, Antwortverhalten des
-  HRM 600 noch nicht am Gerät verifiziert
-- Fallback, falls der Gurt nicht antwortet: Sync der Garmin-Connect-App
-  per iOS-BT-Logging-Profil + PacketLogger mitschneiden
+- ✅ Transport, Watch-Bootstrap, Live-Streams — **am echten Gurt verifiziert**
+  (2026-08-25): HR-Alerts Typ 20, Running Measurement Typ 21, Realtime-HR
+- ✅ Erkenntnis aus dem Probe-Lauf: klassischer GFDI-File-Transfer (5002)
+  wird vom HRM 600 mit UNSUPPORTED abgelehnt; der Gurt nutzt das
+  protobuf-basierte **FileSyncService**-Protokoll (V2)
+- 🧪 `probe-files`/`sync` implementieren jetzt den V2-Weg (FileListRequest →
+  FileRequest → deflate-Stream über ML-Service 0x2018) — Live-Verifikation
+  am Gurt ausstehend
+- `sync` markiert Dateien **nicht** als „synced" — die Garmin-App bekommt
+  den Puffer weiterhin
 
 ## Quellen & Attribution
 

@@ -46,12 +46,19 @@ zuerst dort nachsehen (`gfdi_rx`-Events mit `decoded_hex`).
 
 ## Offene Punkte / Wissensstand
 
-- **Live am Gurt noch unverifiziert** (Stand 2026-08-25): scan/info/live und
-  insbesondere probe-files/sync wurden nur offline getestet.
-- Der 24h-Puffer-Download ist nirgends öffentlich dokumentiert. Hypothese:
-  Standard-GFDI-File-Transfer wie bei Garmin-Uhren (HRM Pro Plus sendet
-  nachweislich Dateityp 128/31 an Gadgetbridge). Wenn `probe-files` keinen
-  Directory-Download liefert: Garmin-Connect-Sync per iOS-BT-Logging-Profil
-  + PacketLogger mitschneiden und Ablauf vergleichen.
+- **Live-Streams am Gurt verifiziert** (Probe-Lauf 2026-08-25,
+  `captures/hrm600-probe-20260825T110706Z.jsonl`): kompletter Bootstrap,
+  Typ-20-HR, Typ-21-RD, Realtime-HR.
+- **Klassischer GFDI-File-Transfer widerlegt**: 5002/5031 → UNSUPPORTED
+  (0x02), 5030 SYSTEM_EVENT → ACK. Der HRM 600 nutzt das
+  **FileSyncService-V2-Protokoll** (Smart-Feld 43 + deflate-Stream über
+  ML-Service 0x2018), implementiert in `hrm600/filesync.py`, dokumentiert in
+  `docs/gfdi-filetransfer.md`. **V2 am Gurt noch unverifiziert** — nächster
+  Schritt: `hrm600 probe-files` erneut laufen lassen.
+- Falls V2 nicht antwortet: Garmin-Connect-Sync per iOS-BT-Logging-Profil +
+  PacketLogger mitschneiden und Ablauf vergleichen. Unklar ist v. a., ob die
+  FileList-Anfrage als kompakter `0x..39`-Frame korrekt geframt ist oder ein
+  anderes Framing (z. B. `0x2b` mit Transport-Header) braucht.
 - `decode_heart_rate` (Feld 1 in Feld-1013-Alerts) ist eine plausible, aber
-  unverifizierte Annahme — beim ersten Live-Lauf gegen Realtime-HR prüfen.
+  unverifizierte Annahme — Feld-1013-Payloads im Probe-Log zeigen Muster
+  `08 <hr> 10 00 18 <varint>` (Feld 1 ≈ 78–80 bpm, plausibel).
