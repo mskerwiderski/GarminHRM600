@@ -7,3 +7,4 @@ dist/
 *.jsonl
 captures/
 downloads/
+*.csv
