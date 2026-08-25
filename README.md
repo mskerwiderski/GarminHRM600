@@ -21,11 +21,18 @@ hrm600 live --duration 60      # Live-HR + Running Dynamics (JSONL-Log)
 hrm600 probe-files             # R&D: Supported File Types + FIT-Directory
 hrm600 sync                    # FIT-Directory + alle FIT-Dateien laden
 hrm600 decode downloads/*.fit --hr-csv hr.csv   # FIT → HR-Zeitreihe
+hrm600 export "2026-08-23 0500 0900" ./exports  # Puffer laden + Zeitraum als CSV
 ```
 
 Der Gurt muss getragen (aktiviert) und darf mit keinem anderen Central
 (Uhr, Garmin-Connect-App) verbunden sein. Beim ersten Verbinden ggf.
 `--pair` mitgeben.
+
+`export` ist das Ein-Schritt-Kommando: Puffer herunterladen (inkrementell,
+Cache in `downloads/`), Zeitraum (UTC, Start inklusiv, Ende exklusiv)
+herausschneiden, CSV `HRM600_<Datum>_<von>_<bis>.csv` ins Export-Verzeichnis
+schreiben und eine Statistik (Abdeckung, Lücken, min/avg/max) ausgeben.
+Mit `--offline` wird nur der Cache verwendet, ohne BLE.
 
 ## Wie es funktioniert
 

@@ -99,7 +99,11 @@ async def cmd_live(args: argparse.Namespace) -> None:
             print(f"#   {kind}: {count}", file=sys.stderr)
 
 
-async def run_filetransfer(args: argparse.Namespace, download: bool) -> None:
+async def run_filetransfer(
+    args: argparse.Namespace,
+    download: bool,
+    skip_existing: bool = False,
+) -> None:
     out_path = args.out or default_out_path("hrm600-sync" if download else "hrm600-probe")
     target = await resolve_target(args.address, args.name_regex, args.scan_timeout)
     print(f"# Log: {out_path}", file=sys.stderr)
@@ -168,6 +172,12 @@ async def run_filetransfer(args: argparse.Namespace, download: bool) -> None:
                                 if args.type is None
                                 or (f.type_name or "").lower() == args.type.lower()
                             ]
+                            if skip_existing:
+                                cached = {p.name for p in args.out_dir.glob("*.fit")}
+                                skipped = sum(1 for f in wanted if f.filename() in cached)
+                                wanted = [f for f in wanted if f.filename() not in cached]
+                                if skipped:
+                                    print(f"# {skipped} file(s) already cached", file=sys.stderr)
                             print(f"# Downloading {len(wanted)} file(s)...", file=sys.stderr)
                             fs.queue_downloads(wanted)
                             queued_downloads = True
@@ -214,6 +224,58 @@ async def cmd_probe_files(args: argparse.Namespace) -> None:
 
 async def cmd_sync(args: argparse.Namespace) -> None:
     await run_filetransfer(args, download=True)
+
+
+async def cmd_export(args: argparse.Namespace) -> None:
+    from .export import (
+        compute_stats,
+        export_filename,
+        filter_window,
+        format_stats,
+        parse_window,
+    )
+    from .fitdecode import collect_store_and_forward, read_fit, write_hr_csv
+
+    try:
+        start, end = parse_window(args.window)
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
+    args.export_dir.mkdir(parents=True, exist_ok=True)
+
+    if not args.offline:
+        # full listing (past windows may already be flagged as synced by the
+        # Garmin app), skip files already in the cache
+        args.all_files = True
+        args.classic = False
+        args.type = None
+        args.out_dir = args.cache_dir
+        await run_filetransfer(args, download=True, skip_existing=True)
+
+    paths = sorted(args.cache_dir.glob("store_and_forward*.fit"))
+    if not paths:
+        raise SystemExit(f"No buffer files in {args.cache_dir}; run without --offline first.")
+    decoded = []
+    for path in paths:
+        try:
+            messages, _ = read_fit(path)
+        except Exception as e:
+            print(f"# Skipping {path.name}: {e}", file=sys.stderr)
+            continue
+        decoded.append((path, messages))
+    series, anchor = collect_store_and_forward(decoded)
+    print(f"# Decoded {len(decoded)} buffer file(s), {len(series)} samples total "
+          f"(anchor C={anchor:.1f})" if series else "# No HR samples decodable",
+          file=sys.stderr)
+
+    windowed = filter_window(series, start, end)
+    stats = compute_stats(windowed, start, end)
+    if not windowed:
+        print(format_stats(stats, start, end))
+        raise SystemExit("No samples in the requested window - no file written.")
+    out_path = args.export_dir / export_filename(start, end)
+    write_hr_csv(windowed, out_path)
+    print(f"# Wrote {out_path}")
+    print(format_stats(stats, start, end))
 
 
 async def cmd_decode(args: argparse.Namespace) -> None:
@@ -336,6 +398,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--out-dir", type=Path, default=Path("downloads"),
                         help="directory for downloaded .fit files")
     p_sync.set_defaults(func=cmd_sync)
+
+    p_export = sub.add_parser(
+        "export",
+        help="download the buffer and export one time window as CSV with stats",
+    )
+    p_export.add_argument("window", help="UTC window: 'YYYY-MM-DD HHMM HHMM', e.g. '2026-08-23 0500 0900'")
+    p_export.add_argument("export_dir", type=Path, help="directory for the exported CSV")
+    add_filetransfer_args(p_export)
+    p_export.add_argument("--cache-dir", type=Path, default=Path("downloads"),
+                          help="cache for downloaded .fit buffer files (default: downloads/)")
+    p_export.add_argument("--offline", action="store_true",
+                          help="skip the BLE download and export from the cache only")
+    p_export.set_defaults(func=cmd_export)
 
     p_decode = sub.add_parser("decode", help="decode downloaded FIT files (summary + HR series)")
     p_decode.add_argument("files", type=Path, nargs="+")
