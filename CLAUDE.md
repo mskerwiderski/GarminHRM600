@@ -1,7 +1,8 @@
 # CLAUDE.md — GarminHRM600
 
 CLI (`hrm600`) für direkten BLE-Zugriff auf den Garmin HRM 600.
-Python ≥3.12, bleak, garmin-fit-sdk. UI-Sprache: **Englisch**, Doku Deutsch.
+Python ≥3.12, bleak, garmin-fit-sdk. UI-Sprache: **Englisch**.
+README + `docs/` sind englisch (public Repo); diese Datei bleibt deutsch.
 
 ## Architektur
 
@@ -24,6 +25,11 @@ destilliert) und upstream `protocol.md` im openrd-Repo (Live-Pfad).
 
 ## Nicht verhandelbar
 
+- **Das Repo ist PUBLIC** (seit 2026-08-25, MIT). Niemals Gesundheitsdaten
+  committen: `hr.csv`, `captures/`, `downloads/`, Exports sind gitignored
+  und müssen es bleiben. Die History wurde per filter-repo von hr.csv
+  bereinigt — nicht erneut verschmutzen. Altes privates Repo liegt als
+  `GarminHRM600-private-archive` auf GitHub (kann Michael manuell löschen).
 - Die **captured Frames in `bootstrap.py` niemals „verbessern"** — exakte
   Bytes inkl. Counter sind gegen den echten Gurt validiert. Response-Frames
   sind `0x..3a` mit gespiegeltem Request-Counter, Requests `0x..39`;
