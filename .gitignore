@@ -8,3 +8,4 @@ dist/
 captures/
 downloads/
 *.csv
+.DS_Store
