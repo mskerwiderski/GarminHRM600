@@ -12,16 +12,22 @@ WINDOW_RE = re.compile(
 GAP_THRESHOLD_S = 60.0
 
 
-def parse_window(window: str) -> tuple[datetime, datetime]:
-    """Parse '2026-08-23 0500 0900' into UTC (start, end); end is exclusive."""
+def parse_window(window: str, local: bool = False) -> tuple[datetime, datetime]:
+    """Parse '2026-08-23 0500 0900' into (start, end); end is exclusive.
+
+    Times are UTC by default; with local=True they are interpreted in the
+    system's local timezone. The returned datetimes are timezone-aware (in
+    the input timezone), so downstream comparison, filtering, and filename
+    formatting all stay in the timezone the user typed.
+    """
     match = WINDOW_RE.match(window.strip())
     if match is None:
         raise ValueError(
-            f"invalid window {window!r}; expected 'YYYY-MM-DD HHMM HHMM' (UTC)"
+            f"invalid window {window!r}; expected 'YYYY-MM-DD HHMM HHMM'"
         )
     date_str, sh, sm, eh, em = match.groups()
     try:
-        day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        day = datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError as e:
         raise ValueError(f"invalid date in window {window!r}: {e}") from None
     if not (0 <= int(sh) <= 23 and 0 <= int(eh) <= 23):
@@ -32,7 +38,10 @@ def parse_window(window: str) -> tuple[datetime, datetime]:
     end = day + timedelta(hours=int(eh), minutes=int(em))
     if end <= start:
         raise ValueError(f"window end must be after start: {window!r}")
-    return start, end
+    if local:
+        # naive .astimezone() attaches the system's local timezone
+        return start.astimezone(), end.astimezone()
+    return start.replace(tzinfo=timezone.utc), end.replace(tzinfo=timezone.utc)
 
 
 def export_filename(start: datetime, end: datetime) -> str:
@@ -96,17 +105,20 @@ def _fmt_duration(seconds: float) -> str:
 
 
 def format_stats(stats: dict, start: datetime, end: datetime) -> str:
+    tz_label = start.tzname() or "UTC"
     lines = [
-        f"  window (UTC):  {start:%Y-%m-%d %H:%M} .. {end:%H:%M}"
+        f"  window ({tz_label}): {start:%Y-%m-%d %H:%M} .. {end:%H:%M}"
         f"  ({_fmt_duration(stats['window_s'])})",
         f"  samples:       {stats['samples']}",
     ]
     if stats["samples"]:
         gap = stats["largest_gap_s"]
         gap_note = f", largest gap {_fmt_duration(gap)}" if gap else ""
+        first = stats["first"].astimezone(start.tzinfo)
+        last = stats["last"].astimezone(start.tzinfo)
         lines.append(
             f"  coverage:      {stats['coverage_pct']:.1f}%"
-            f"  (first {stats['first']:%H:%M:%S}, last {stats['last']:%H:%M:%S}{gap_note})"
+            f"  (first {first:%H:%M:%S}, last {last:%H:%M:%S}{gap_note})"
         )
         lines.append(
             f"  heart rate:    min {stats['hr_min']}"

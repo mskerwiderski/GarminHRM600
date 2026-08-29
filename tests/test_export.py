@@ -101,3 +101,30 @@ def test_format_stats_renders_all_lines() -> None:
     assert "4h00m" in text
     assert "samples:       2" in text
     assert "min 60" in text and "max 140" in text
+
+
+def test_parse_window_local_converts_to_system_timezone(monkeypatch) -> None:
+    import time as time_mod
+
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    time_mod.tzset()
+    try:
+        start, end = parse_window("2026-08-29 1455 1710", local=True)
+        # CEST = UTC+2
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+        assert start_utc == datetime(2026, 8, 29, 12, 55, tzinfo=timezone.utc)
+        assert end_utc == datetime(2026, 8, 29, 15, 10, tzinfo=timezone.utc)
+        # filename keeps the local times as typed
+        assert export_filename(start, end) == "HRM600_20260829_1455_1710.csv"
+        # filtering against UTC series works across timezones
+        inside = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)
+        outside = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+        assert filter_window([(inside, 80), (outside, 70)], start, end) == [(inside, 80)]
+        # stats label and sample times render in the local timezone
+        text = format_stats(compute_stats([(inside, 80)], start, end), start, end)
+        assert "window (CEST)" in text
+        assert "first 15:00:00" in text
+    finally:
+        monkeypatch.delenv("TZ")
+        time_mod.tzset()

@@ -273,7 +273,7 @@ async def cmd_export(args: argparse.Namespace) -> None:
     from .fitdecode import collect_store_and_forward, read_fit, write_hr_csv
 
     try:
-        start, end = parse_window(args.window)
+        start, end = parse_window(args.window, local=args.local)
     except ValueError as e:
         raise SystemExit(str(e)) from None
     args.export_dir.mkdir(parents=True, exist_ok=True)
@@ -308,6 +308,8 @@ async def cmd_export(args: argparse.Namespace) -> None:
     if not windowed:
         print(format_stats(stats, start, end))
         raise SystemExit("No samples in the requested window - no file written.")
+    if args.local:
+        windowed = [(ts.astimezone(start.tzinfo), hr) for ts, hr in windowed]
     out_path = args.export_dir / export_filename(start, end)
     write_hr_csv(windowed, out_path)
     print(f"# Wrote {out_path}")
@@ -439,8 +441,13 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help="download the buffer and export one time window as CSV with stats",
     )
-    p_export.add_argument("window", help="UTC window: 'YYYY-MM-DD HHMM HHMM', e.g. '2026-08-23 0500 0900'")
+    p_export.add_argument("window",
+                          help="time window 'YYYY-MM-DD HHMM HHMM', e.g. '2026-08-23 0500 0900'; "
+                               "UTC unless --local is given")
     p_export.add_argument("export_dir", type=Path, help="directory for the exported CSV")
+    p_export.add_argument("--local", action="store_true",
+                          help="interpret the window (and write CSV timestamps) in the system's "
+                               "local timezone instead of UTC")
     add_filetransfer_args(p_export)
     p_export.add_argument("--cache-dir", type=Path, default=Path("downloads"),
                           help="cache for downloaded .fit buffer files (default: downloads/)")

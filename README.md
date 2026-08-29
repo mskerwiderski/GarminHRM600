@@ -85,9 +85,10 @@ hrm600 decode downloads/*.fit --hr-csv hr.csv
 hrm600 export "2026-08-23 0500 0900" ./exports
 ```
 
-`export` takes a UTC window (`"YYYY-MM-DD HHMM HHMM"`, start inclusive, end
-exclusive), downloads new buffer files into a local cache (`downloads/` by
-default, `--cache-dir` to change, `--offline` to skip BLE entirely), writes
+`export` takes a time window (`"YYYY-MM-DD HHMM HHMM"`, start inclusive, end
+exclusive; UTC by default, or the system's local timezone with `--local`),
+downloads new buffer files into a local cache (`downloads/` by default,
+`--cache-dir` to change, `--offline` to skip BLE entirely), writes
 `HRM600_<date>_<from>_<to>.csv` into the export directory and prints a
 summary:
 
