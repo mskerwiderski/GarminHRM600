@@ -58,7 +58,7 @@ look there first (`gfdi_rx` events with `decoded_hex`).
   type-20 HR, type-21 RD, realtime HR.
 - **Classic GFDI file transfer disproven**: 5002/5031 → UNSUPPORTED
   (0x02), 5030 SYSTEM_EVENT → ACK. The HRM 600 uses the
-  **FileSyncService V2 protocol** (Smart field 43 + deflate stream over
+  **FileSyncService V2 protocol** (Smart field 43 + raw file stream over
   ML service 0x2018), implemented in `hrm600/filesync.py`, documented in
   `docs/gfdi-filetransfer.md`.
 - **V2 listing confirmed on the strap** (2nd probe run,

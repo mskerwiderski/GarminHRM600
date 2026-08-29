@@ -115,7 +115,7 @@ BLE GATT (Multi-Link service 6a4e2800-...)
        │                   └─ compact Smart frames (protobuf):
        │                       Core, EventSharing (HR type 20, RD type 21),
        │                       FileSyncService (field 43)
-       └─ service 0x2018: raw deflate stream for file content (V2 download)
+       └─ service 0x2018: raw file stream for content (V2 download)
 ```
 
 A passive subscriber only gets the standard BLE characteristics. The Garmin
@@ -128,8 +128,8 @@ transfer (`DOWNLOAD_REQUEST` 5002 → UNSUPPORTED) and instead uses the newer
 protobuf **FileSyncService**: `FileListRequest` → paginated, chunked
 `FileListResponse` (each chunk must be ACKed or the strap stalls and
 retransmits) → per file `FileRequest` → 16-bit handle → open a dedicated
-Multi-Link service (`0x2018`) → receive the file as a raw **deflate**
-stream. Details, message layouts, and byte-level findings from the probe
+Multi-Link service (`0x2018`) → receive the file as a **raw byte
+stream** (uncompressed on the HRM 600; watches use deflate here). Details, message layouts, and byte-level findings from the probe
 runs are documented in
 [docs/gfdi-filetransfer.md](docs/gfdi-filetransfer.md).
 
@@ -157,7 +157,7 @@ hrm600/
 ├── eventsharing.py  subscribe/alert payloads + decoders (types 20/21/22/23)
 ├── bootstrap.py     captured watch bootstrap frames (byte-exact)
 ├── client.py        bleak client: notify pump, watch emulation
-├── filesync.py      FileSyncService (V2): listing, chunk reassembly, deflate
+├── filesync.py      FileSyncService (V2): listing, chunk reassembly, streams
 ├── filetransfer.py  classic GFDI file transfer (rejected by the HRM 600)
 ├── fitdecode.py     FIT → absolute HR time series (event-clock anchoring)
 ├── export.py        window parsing, filtering, statistics

@@ -330,7 +330,26 @@ def test_non_fit_stream_content_is_discarded() -> None:
     fs.on_service_close(0x2018, 9, 0)
 
     assert fs.completed == []
-    assert fs.failed and fs.failed[0][1] == "not a FIT file"
+    assert fs.failed and fs.failed[0][1] == "not a FIT stream"
+
+
+def test_raw_uncompressed_fit_stream_is_accepted() -> None:
+    # the real HRM 600 streams files raw (verified 2026-08-29): the
+    # "compressed" sizes always equalled the listed file sizes and inflate
+    # never succeeded on any live stream
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    f1 = parse_file(make_file_raw(1, 1, len(FIT_CONTENT), 0, "STORE_AND_FORWARD_HR_DATA_FIT"))
+    fs.queue_downloads([f1])
+    fs.on_gfdi_frame(grant_response(1))
+    fs.on_register_ok(0x2018, 9)
+    fs.on_service_payload(0x2018, 9, b"\x00\x00\x00" + FIT_CONTENT[:30])
+    fs.on_service_payload(0x2018, 9, FIT_CONTENT[30:])
+    fs.on_service_close(0x2018, 9, 0)
+
+    assert fs.failed == []
+    assert len(fs.completed) == 1
+    assert fs.completed[0][1] == FIT_CONTENT
 
 
 def test_next_page_id_is_stored_from_listing() -> None:

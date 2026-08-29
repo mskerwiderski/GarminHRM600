@@ -172,7 +172,10 @@ Multi-Link service:
    0xa018, 0xc018, 0xe018); unreliable is sufficient.
 3. Write to the new service handle: `[00 00 <handle:2 LE> 00 00]`.
 4. The device's first message starts with `00 00 00`, followed by raw
-   **deflate**-compressed chunks (zlib inflate).
+   the file content. On the HRM 600 the content is **raw/uncompressed**
+   (the byte count always equals the listed file size); Gadgetbridge
+   documents deflate-compressed streams for watches, so treat inflate
+   as a fallback, not the default.
 5. End: the device sends handle management `CLOSE_HANDLE_RESP` (type 3):
    `[00][03][client_id:8][service:2][handle:1][status:1]`.
 6. Optionally mark the file as synced via `FileSetFlags` with 0xa5a5 —

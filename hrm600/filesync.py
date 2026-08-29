@@ -516,14 +516,17 @@ class FileSyncV2:
             self.failed.append((stream.file, "empty stream"))
             self.advance()
             return
-        data = inflate(raw)
-        if data is None:
-            self.log("Inflate failed; discarding")
-            self.failed.append((stream.file, "inflate failed"))
-        elif not is_fit(data):
-            self.log(f"Inflated {len(data)}B but not a FIT file; discarding")
-            self.failed.append((stream.file, "not a FIT file"))
+        # the HRM 600 streams files raw; deflate is known from watches (GB),
+        # so try plain FIT first and keep inflate as a fallback
+        if is_fit(raw):
+            self.log(f"Raw FIT stream, {len(raw)}B")
+            self.completed.append((stream.file, raw))
         else:
-            self.log(f"Inflated to {len(data)}B")
-            self.completed.append((stream.file, data))
+            data = inflate(raw)
+            if data is not None and is_fit(data):
+                self.log(f"Inflated to {len(data)}B")
+                self.completed.append((stream.file, data))
+            else:
+                self.log("Neither raw FIT nor inflatable; discarding")
+                self.failed.append((stream.file, "not a FIT stream"))
         self.advance()
