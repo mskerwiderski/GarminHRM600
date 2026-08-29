@@ -16,7 +16,9 @@ hrm600/eventsharing.py  subscribe/alert payloads + decoders (types 20/21/22/23)
 hrm600/bootstrap.py     captured fenix 8 bootstrap frames (bytes are canonical!)
 hrm600/client.py        Hrm600Client: bleak, notify pump, watch emulation
 hrm600/filetransfer.py  classic download state machine (5002/5004/5000)
+hrm600/filesync.py      FileSyncService V2: listing, grants, chunk ACKs, streams
 hrm600/fitdecode.py     FIT → HR time series (event-clock anchoring)
+hrm600/export.py        window parsing (UTC/local), filtering, statistics
 hrm600/cli.py           argparse subcommands
 ```
 
@@ -45,6 +47,9 @@ path).
 .venv/bin/ruff check hrm600 tests
 ```
 
+`hrm600 export "<window>" /tmp/x --offline` exercises the decode/export
+path against the `downloads/` cache without BLE.
+
 Live tests need the strap: worn, with no other central connected (watch and
 phone app out of range or Bluetooth off). Order:
 `hrm600 scan` → `info` → `live --duration 60` → `probe-files`.
@@ -69,8 +74,17 @@ look there first (`gfdi_rx` events with `decoded_hex`).
   (`[counter][offset:4][total:4][chunk:4][data]`); without a per-chunk ACK
   (ProtobufStatus format, 5 s retransmit) the strap never sends chunk 2.
   Reassembly + ACK: `FileSyncV2.on_transport_chunk`.
-- **Download + decode verified end-to-end** (2026-08-25): 26 files of
-  `STORE_AND_FORWARD_HR_DATA_FIT`, yielding 82,685 HR samples (Aug 08–25).
+- **Download + decode verified end-to-end** (2026-08-25, re-verified
+  2026-08-29 after the sync-robustness fixes): 94 cached files of
+  `STORE_AND_FORWARD_HR_DATA_FIT`, 250,329 HR samples (Aug 08–29),
+  including a same-day recording that the strap only flushed during the
+  sync session. `export --local` reproduced a 2h15m ride window at 100%
+  coverage.
+- **File content streams are RAW, not deflate** (2026-08-29): inflate never
+  succeeded on any live HRM 600 stream — the byte count always equals the
+  listed file size. The Aug-25 downloads only worked through a
+  keep-raw-bytes fallback. Gadgetbridge's deflate applies to watches;
+  in `filesync.py` raw FIT is the primary path, inflate the fallback.
 - **Time model of the store-and-forward files** (important!): the FIT files
   contain ONLY `hr` messages (no file_id, no timestamp_correlation); read
   with `garmin-fit-sdk` and `merge_heart_rates=False`, otherwise

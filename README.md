@@ -62,7 +62,7 @@ connection, add `--pair` to bond.
 | `hrm600 live` | Stream live HR + Running Dynamics to the terminal and a JSONL log. |
 | `hrm600 sync` | List and download the strap's FIT files into `downloads/`. |
 | `hrm600 decode` | Decode downloaded FIT files into an absolute HR time series / CSV. |
-| `hrm600 export` | One-shot: download buffer → cut a UTC time window → CSV + statistics. |
+| `hrm600 export` | One-shot: download buffer → cut a time window (UTC, or local with `--local`) → CSV + statistics. |
 | `hrm600 probe-files` | R&D command: probe the file transfer surface, log every raw frame. |
 
 ### Examples
