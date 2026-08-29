@@ -7,6 +7,10 @@ id1>>32 is the Garmin timestamp of the LAST sample, so
 C = id_ts - ev_last maps the event clock to Garmin time. C is stable to
 sub-second over weeks; files still in the ring buffer carry a flush timestamp
 instead, so C is calibrated from the largest cluster across all files.
+
+Consecutive files overlap in the ring buffer, so merging them yields the
+same beats twice; samples closer together than MIN_BEAT_INTERVAL_S are
+dropped.
 """
 
 from __future__ import annotations
@@ -22,6 +26,10 @@ from .filetransfer import GARMIN_TIME_EPOCH
 ID_RE = re.compile(r"_(\d+)_(\d+)\.fit$")
 
 ANCHOR_CLUSTER_TOLERANCE_S = 60.0
+
+# Consecutive ring-buffer files overlap, so the same beats arrive twice.
+# 0.25 s is 240 bpm: below that no two samples can be distinct beats.
+MIN_BEAT_INTERVAL_S = 0.25
 
 
 def read_fit(path: Path) -> tuple[dict[str, list[dict[str, Any]]], list[Any]]:
@@ -123,12 +131,17 @@ def collect_store_and_forward(
     anchor = calibrate_event_anchor(anchors)
     if anchor is None:
         return [], None
-    series: list[tuple[datetime, int]] = []
+    merged: list[tuple[datetime, int]] = []
     for samples, _ in per_file:
         for ev, bpm in samples:
             unix = ev + anchor + GARMIN_TIME_EPOCH
-            series.append((datetime.fromtimestamp(unix, tz=timezone.utc), bpm))
-    series.sort(key=lambda row: row[0])
+            merged.append((datetime.fromtimestamp(unix, tz=timezone.utc), bpm))
+    merged.sort(key=lambda row: row[0])
+    series: list[tuple[datetime, int]] = []
+    for row in merged:
+        if series and (row[0] - series[-1][0]).total_seconds() < MIN_BEAT_INTERVAL_S:
+            continue
+        series.append(row)
     return series, anchor
 
 

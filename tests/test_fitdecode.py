@@ -7,6 +7,7 @@ from pathlib import Path
 
 from hrm600.filetransfer import GARMIN_TIME_EPOCH
 from hrm600.fitdecode import (
+    MIN_BEAT_INTERVAL_S,
     calibrate_event_anchor,
     collect_store_and_forward,
     extract_hr_event_samples,
@@ -59,3 +60,27 @@ def test_collect_store_and_forward_maps_event_clock_to_real_time() -> None:
     assert series[0] == (expected_first, 70)
     assert series[-1] == (expected_last, 90)
     assert len(series) == 3
+
+
+def test_collect_store_and_forward_drops_overlap_duplicates() -> None:
+    anchor = 1_153_433_598
+    # two ring-buffer files whose coverage overlaps: the beats at 1002/1003
+    # are recorded by both, a few milliseconds apart
+    ev_a = [1000.0, 1001.0, 1002.0, 1003.0]
+    id1_a = (anchor + 1003) << 32 | 7
+    path_a = Path(f"downloads/store_and_forward_hr_data_fit_{id1_a}_1.fit")
+    msgs_a = {"hr_mesgs": [{"event_timestamp": ev_a, "filtered_bpm": [70, 71, 72, 73]}]}
+    ev_b = [1002.03, 1003.04, 1004.0]
+    id1_b = (anchor + 1004) << 32 | 8
+    path_b = Path(f"downloads/store_and_forward_hr_data_fit_{id1_b}_1.fit")
+    msgs_b = {"hr_mesgs": [{"event_timestamp": ev_b, "filtered_bpm": [72, 73, 74]}]}
+
+    series, c = collect_store_and_forward([(path_a, msgs_a), (path_b, msgs_b)])
+
+    assert c == anchor
+    # one sample per beat, the duplicates from the overlap are gone
+    assert [bpm for _, bpm in series] == [70, 71, 72, 73, 74]
+    gaps = [
+        (b[0] - a[0]).total_seconds() for a, b in zip(series, series[1:])
+    ]
+    assert min(gaps) >= MIN_BEAT_INTERVAL_S
