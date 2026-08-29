@@ -145,6 +145,31 @@ async def run_filetransfer(
         listing_printed = False
         queued_downloads = False
         idle_since: float | None = None
+        attempted: set[tuple[int, int]] = set()
+        cached = {p.name for p in args.out_dir.glob("*.fit")} if skip_existing else set()
+        listing_round = 0
+        max_listing_rounds = 3
+        relist_exhausted = False
+
+        def queue_new_wanted() -> int:
+            """Queue listed/notified files not yet attempted or cached."""
+            wanted = []
+            for f in fs.files:
+                key = (f.id1, f.id2)
+                if key in attempted:
+                    continue
+                if args.type is not None and (f.type_name or "").lower() != args.type.lower():
+                    continue
+                if f.filename() in cached:
+                    attempted.add(key)
+                    continue
+                attempted.add(key)
+                wanted.append(f)
+            if wanted:
+                print(f"# Downloading {len(wanted)} file(s)...", file=sys.stderr)
+                fs.queue_downloads(wanted)
+            return len(wanted)
+
         try:
             while time.monotonic() < end and not stop.is_set():
                 await client.pump_pending_actions()
@@ -160,6 +185,7 @@ async def run_filetransfer(
                         ft_classic.start_directory_download()
 
                 if fs is not None:
+                    fs.tick()
                     if fs.listing_complete and not listing_printed:
                         listing_printed = True
                         print(f"\n# File list: {len(fs.files)} file(s)")
@@ -167,21 +193,31 @@ async def run_filetransfer(
                             print(f"  {f.describe()}")
                         print()
                         if download:
-                            wanted = [
-                                f for f in fs.files
-                                if args.type is None
-                                or (f.type_name or "").lower() == args.type.lower()
-                            ]
-                            if skip_existing:
-                                cached = {p.name for p in args.out_dir.glob("*.fit")}
-                                skipped = sum(1 for f in wanted if f.filename() in cached)
-                                wanted = [f for f in wanted if f.filename() not in cached]
-                                if skipped:
-                                    print(f"# {skipped} file(s) already cached", file=sys.stderr)
-                            print(f"# Downloading {len(wanted)} file(s)...", file=sys.stderr)
-                            fs.queue_downloads(wanted)
+                            queue_new_wanted()
                             queued_downloads = True
-                    finished = listing_printed and (not download or (queued_downloads and fs.idle))
+                    finished = (
+                        fs.listing_complete
+                        and listing_printed
+                        and (not download or (queued_downloads and fs.idle))
+                    )
+                    if finished and download and probe_fired:
+                        # files flushed during this session (notifications) or
+                        # beyond the last listed page: queue them, then re-list
+                        # until a round brings nothing new
+                        if queue_new_wanted():
+                            finished = False
+                        elif listing_round + 1 < max_listing_rounds and not relist_exhausted:
+                            listing_round += 1
+                            print(f"# Re-listing (round {listing_round})...", file=sys.stderr)
+                            fs.listing_complete = False
+                            listing_printed = True  # don't reprint the full list
+                            fs.request_file_list(
+                                start_page_id=fs.next_page_id,
+                                exclude_synced=not args.all_files,
+                            )
+                            finished = False
+                        else:
+                            relist_exhausted = True
                 else:
                     if ft_classic.directory is not None and not listing_printed:
                         listing_printed = True

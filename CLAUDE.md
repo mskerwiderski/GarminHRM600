@@ -83,6 +83,15 @@ look there first (`gfdi_rx` events with `decoded_hex`).
   across all files (`fitdecode.calibrate_event_anchor`) and the id
   timestamp of any single file is NEVER trusted.
   `id2 & 0xFFFFFFFF` = file size in bytes.
+- **Sync robustness (findings 2026-08-29,
+  `captures/hrm600-sync-20260829T175016Z.jsonl`)**: complete `0x2c` frames
+  must be generically ACKed, otherwise the strap retransmits them (incl.
+  grants) every ~5 s and order-based matching derails; FileSyncService
+  field 5 = grant notification `{FileId, handle}` (authoritative
+  handle→file binding, undocumented in Gadgetbridge); status=3 =
+  file evicted from the round-robin buffer; the current recording is
+  flushed into listable files during the session → re-list after the
+  queue drains. All implemented in `filesync.py` + `cli.run_filetransfer`.
 - `decode_heart_rate` (field 1 in field-1013 alerts) is a plausible but
   unverified assumption — field-1013 payloads in the probe log show the
   pattern `08 <hr> 10 00 18 <varint>` (field 1 ≈ 78–80 bpm, plausible).

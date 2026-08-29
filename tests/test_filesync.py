@@ -108,6 +108,9 @@ def test_stream_open_request_layout() -> None:
     assert build_stream_open_request(0x0102) == bytes.fromhex("000002010000")
 
 
+FIT_CONTENT = b"\x0e\x10\x00\x00\x64\x00\x00\x00.FIT\x00\x00" + b"x" * 100
+
+
 def make_compact_frame(smart_payload: bytes) -> dict:
     gfdi = build_compact_smart_message(smart_payload, frame_kind=0x39, sequence=3, counter=5)
     return parse_gfdi_message(gfdi)
@@ -141,7 +144,8 @@ def test_full_sync_flow_list_request_stream_inflate() -> None:
     label, open_req = client.raw[-1]
     assert open_req == bytes([9]) + build_stream_open_request(0xBEEF)
 
-    payload = zlib.compress(b"FIT" * 100)
+    fit_bytes = FIT_CONTENT
+    payload = zlib.compress(fit_bytes)
     fs.on_service_payload(0x2018, 9, b"\x00\x00\x00" + payload[:20])
     fs.on_service_payload(0x2018, 9, payload[20:])
     fs.on_service_close(0x2018, 9, 0)
@@ -149,7 +153,7 @@ def test_full_sync_flow_list_request_stream_inflate() -> None:
     assert fs.idle is True
     assert len(fs.completed) == 1
     sync_file, data = fs.completed[0]
-    assert data == b"FIT" * 100
+    assert data == fit_bytes
     assert sync_file.id1 == 11
 
 
@@ -233,3 +237,107 @@ def test_type_name_propagates_across_entries_and_pages() -> None:
 
     assert [f.type_name for f in fs.files] == ["STORE_AND_FORWARD_HR_DATA_FIT"] * 3
     assert fs.listing_complete is True
+
+
+def grant_response(handle: int) -> dict:
+    return make_compact_frame(
+        smart_with_file_sync(field_len(2, field_varint(1, 0) + field_varint(3, handle)))
+    )
+
+
+def grant_notification(id1: int, id2: int, handle: int) -> dict:
+    body = field_len(1, file_id(id1, id2)) + field_varint(2, handle)
+    return make_compact_frame(smart_with_file_sync(field_len(5, body)))
+
+
+def test_duplicate_grant_is_ignored() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    f1 = parse_file(make_file_raw(1, 1, 10, 0, "STORE_AND_FORWARD_HR_DATA_FIT"))
+    f2 = parse_file(make_file_raw(2, 2, 10, 0, None))
+    fs.queue_downloads([f1, f2])
+
+    fs.on_gfdi_frame(grant_response(0x0005))          # grant for f1
+    assert fs.stream is not None and fs.stream.file is f1
+    fs.on_service_close(0x2018, 9, 0)                 # unmatched close: ml_handle None
+    fs.stream = None
+    fs.advance()                                      # now requesting f2
+
+    fs.on_gfdi_frame(grant_response(0x0005))          # retransmitted grant for f1
+    # must NOT be bound to the pending request for f2
+    assert fs.stream is None
+    assert fs.requested is f2
+
+
+def test_field5_map_overrides_request_order() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    f1 = parse_file(make_file_raw(1, 1, 10, 0, "STORE_AND_FORWARD_HR_DATA_FIT"))
+    f2 = parse_file(make_file_raw(2, 2, 10, 0, None))
+    fs.queue_downloads([f1, f2])
+    assert fs.requested is f1
+
+    # strap announces that handle 7 belongs to f2 (not the requested f1)
+    fs.on_gfdi_frame(grant_notification(2, 2, 7))
+    fs.on_gfdi_frame(grant_response(7))
+
+    assert fs.stream is not None and fs.stream.file is f2
+    assert fs.requested is f1          # f1 request still outstanding
+    assert all(f is not f2 for f in fs.pending)
+
+
+def test_unconsumed_grant_is_recovered_after_timeout() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    f1 = parse_file(make_file_raw(1, 1, 10, 0, "STORE_AND_FORWARD_HR_DATA_FIT"))
+    fs.queue_downloads([f1])
+    assert fs.requested is f1
+
+    fs.deadline = 0.0                  # force the timeout
+    fs.tick()
+    assert fs.requested is None
+    assert fs.failed and fs.failed[0][0] is f1
+
+    fs.on_gfdi_frame(grant_notification(1, 1, 3))
+    assert fs.stream is not None and fs.stream.file is f1
+    assert fs.failed == []
+
+
+def test_single_chunk_response_frames_get_generic_ack() -> None:
+    from hrm600.gfdi import build_gfdi_message
+
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    listing = smart_with_file_sync(field_len(10, field_len(4, make_file_raw(1, 1, 10, 0, "x"))))
+    body = struct.pack("<H", 0x0042) + struct.pack("<III", 0, len(listing), len(listing)) + listing
+    fs.on_gfdi_frame(parse_gfdi_message(build_gfdi_message(0x842C, body)))
+
+    assert fs.listing_complete is True
+    acks = [gfdi for label, gfdi in client.gfdi if label.startswith("Compact generic ACK")]
+    assert len(acks) == 1
+    parsed = parse_gfdi_message(acks[0])
+    assert parsed["body"] == struct.pack("<H", 5044) + b"\x00"
+
+
+def test_non_fit_stream_content_is_discarded() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    f1 = parse_file(make_file_raw(1, 1, 10, 0, "STORE_AND_FORWARD_HR_DATA_FIT"))
+    fs.queue_downloads([f1])
+    fs.on_gfdi_frame(grant_response(1))
+    fs.on_register_ok(0x2018, 9)
+    fs.on_service_payload(0x2018, 9, b"\x00\x00\x00" + zlib.compress(b"garbage" * 30))
+    fs.on_service_close(0x2018, 9, 0)
+
+    assert fs.completed == []
+    assert fs.failed and fs.failed[0][1] == "not a FIT file"
+
+
+def test_next_page_id_is_stored_from_listing() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    listing = smart_with_file_sync(
+        field_len(10, field_varint(3, 1282) + field_len(4, make_file_raw(1, 1, 10, 0, "x")))
+    )
+    fs.on_gfdi_frame(make_compact_frame(listing))
+    assert fs.next_page_id == 1282

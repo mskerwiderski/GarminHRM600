@@ -16,6 +16,7 @@ GarminSupport.downloadFileFromServiceV2, CommunicatorV2.startTransfer.
 from __future__ import annotations
 
 import struct
+import time
 import zlib
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -151,6 +152,20 @@ def parse_file_sync_service(payload: bytes) -> list[dict[str, Any]]:
                 if sf == 1 and sw == 2 and isinstance(sv, bytes):
                     notif["files"].append(parse_file(sv))
             events.append(notif)
+        elif f == 5:  # grant notification: {file_id:1, handle:2} (observed on HRM 600)
+            grant: dict[str, Any] = {"kind": "grant_notification"}
+            for sf, sw, sv in parse_fields(value):
+                if sf == 1 and sw == 2 and isinstance(sv, bytes):
+                    for gf, gw, gv in parse_fields(sv):
+                        if gw == 1 and isinstance(gv, bytes):
+                            num = struct.unpack("<Q", gv)[0]
+                            if gf == 1:
+                                grant["id1"] = num
+                            elif gf == 2:
+                                grant["id2"] = num
+                elif sf == 2 and sw == 0 and isinstance(sv, int):
+                    grant["handle"] = sv
+            events.append(grant)
         else:
             events.append({"kind": f"file_sync_field_{f}", "raw_hex": value.hex()})
     return events
@@ -174,6 +189,10 @@ def inflate(data: bytes) -> bytes | None:
     return None
 
 
+def is_fit(data: bytes) -> bool:
+    return len(data) >= 12 and data[8:12] == b".FIT"
+
+
 @dataclass
 class StreamState:
     file: SyncFile
@@ -194,18 +213,27 @@ class FileSyncV2:
       client.on_service_close    -> self.on_service_close
     """
 
+    REQUEST_TIMEOUT_S = 6.0
+
     def __init__(self, client: Any, log: Callable[[str], None]) -> None:
         self.client = client
         self.log = log
         self.files: list[SyncFile] = []
         self.listing_complete = False
+        self.next_page_id: int | None = None
         self.pending: list[SyncFile] = []
         self.requested: SyncFile | None = None
+        self.deadline: float | None = None
         self.stream: StreamState | None = None
         self.completed: list[tuple[SyncFile, bytes]] = []
         self.failed: list[tuple[SyncFile, str]] = []
         self.used_service_ids: set[int] = set()
         self.exclude_synced = True
+        # grant bookkeeping: the strap retransmits grants until consumed, and
+        # field-5 notifications map stream handles to file ids authoritatively
+        self.seen_handles: set[int] = set()
+        self.handle_map: dict[int, tuple[int, int]] = {}
+        self.by_key: dict[tuple[int, int], SyncFile] = {}
         # counter -> {"total": int, "buf": bytearray} for chunked protobuf transport
         self._chunks: dict[int, dict[str, Any]] = {}
         # only the first file of a type carries the type name; propagate it
@@ -226,14 +254,27 @@ class FileSyncV2:
             build_compact_eventsharing_message(protobuf, sequence=sequence, counter=counter),
         )
 
-    def request_file_list(self, cursor_id: int | None = None, exclude_synced: bool = True) -> None:
+    def request_file_list(
+        self,
+        cursor_id: int | None = None,
+        start_page_id: int | None = None,
+        exclude_synced: bool = True,
+    ) -> None:
         self.exclude_synced = exclude_synced
         self.send_smart_request(
             "FileSync FileListRequest",
-            build_file_list_request(cursor_id=cursor_id, exclude_synced=exclude_synced),
+            build_file_list_request(
+                cursor_id=cursor_id, start_page_id=start_page_id, exclude_synced=exclude_synced
+            ),
         )
 
+    def register_files(self, files: list[SyncFile]) -> None:
+        self.resolve_type_names(files)
+        for f in files:
+            self.by_key.setdefault((f.id1, f.id2), f)
+
     def queue_downloads(self, files: list[SyncFile]) -> None:
+        self.register_files(files)
         self.pending.extend(files)
         self.advance()
 
@@ -243,8 +284,18 @@ class FileSyncV2:
         if not self.pending:
             return
         self.requested = self.pending.pop(0)
+        self.deadline = time.monotonic() + self.REQUEST_TIMEOUT_S
         self.log(f"Requesting file {self.requested.describe()}")
         self.send_smart_request("FileSync FileRequest", build_file_request(self.requested.raw))
+
+    def tick(self) -> None:
+        """Fail a request that got neither a grant nor a definitive error."""
+        if self.requested is not None and self.deadline is not None and time.monotonic() > self.deadline:
+            self.failed.append((self.requested, "timeout"))
+            self.log(f"File request timed out: {self.requested.describe()}")
+            self.requested = None
+            self.deadline = None
+            self.advance()
 
     # ---- incoming protobuf ----
 
@@ -280,7 +331,16 @@ class FileSyncV2:
         offset, total, chunk_len = struct.unpack("<III", body[2:14])
         data = body[14:14 + chunk_len]
         if offset == 0 and chunk_len >= total:
-            # single-chunk frames flow fine without an ACK (proven live)
+            if kind == 0x2C:
+                # un-ACKed 0x2c responses get retransmitted every ~5 s; the
+                # duplicate grants then derail the request/response matching
+                from .gfdi import build_compact_status_ack
+
+                _, sequence = self.client.next_compact_ids()
+                self.client.enqueue_gfdi(
+                    f"Compact generic ACK kind=0x{kind:02x} counter=0x{counter:04x}",
+                    build_compact_status_ack(kind, sequence),
+                )
             return data
         _, sequence = self.client.next_compact_ids()
         state = self._chunks.setdefault(counter, {"total": total, "buf": bytearray()})
@@ -314,8 +374,10 @@ class FileSyncV2:
         kind = event["kind"]
         if kind == "file_list_response":
             files = event["files"]
-            self.resolve_type_names(files)
+            self.register_files(files)
             self.files.extend(files)
+            if event.get("next_page_id") is not None:
+                self.next_page_id = event["next_page_id"]
             self.log(
                 f"File list page: {len(files)} file(s), cursor={event.get('cursor_id')}, "
                 f"next_page={event.get('next_page_id')}"
@@ -326,27 +388,80 @@ class FileSyncV2:
             else:
                 self.listing_complete = True
         elif kind == "new_file_notification":
-            self.resolve_type_names(event["files"])
+            self.register_files(event["files"])
             for f in event["files"]:
                 self.log(f"New file notification: {f.describe()}")
                 self.files.append(f)
+        elif kind == "grant_notification":
+            self.on_grant_notification(event)
         elif kind == "file_response":
             self.on_file_response(event)
         else:
             self.log(f"FileSync event: {event}")
 
+    def on_grant_notification(self, event: dict[str, Any]) -> None:
+        handle16 = event.get("handle")
+        key = (event.get("id1"), event.get("id2"))
+        if handle16 is None or key[0] is None:
+            self.log(f"Grant notification incomplete: {event}")
+            return
+        self.handle_map[handle16] = key
+        sync_file = self.by_key.get(key)
+        self.log(
+            f"Grant notification: handle=0x{handle16:04x} -> "
+            f"{sync_file.describe() if sync_file else key}"
+        )
+        # recover a grant whose file_response we missed or mis-attributed
+        if (
+            handle16 not in self.seen_handles
+            and sync_file is not None
+            and self.stream is None
+            and self.requested is None
+        ):
+            self.failed = [(f, r) for f, r in self.failed if (f.id1, f.id2) != key]
+            self.log(f"Recovering un-consumed grant 0x{handle16:04x}")
+            self.start_stream(sync_file, handle16)
+
     def on_file_response(self, event: dict[str, Any]) -> None:
+        status = event.get("status")
+        handle16 = event.get("handle")
+        if status == 0 and handle16 is not None:
+            if handle16 in self.seen_handles:
+                self.log(f"Stale/duplicate grant handle=0x{handle16:04x} - ignoring")
+                return
+            # trust the field-5 handle map over request order when available
+            target: SyncFile | None = None
+            mapped = self.handle_map.get(handle16)
+            if mapped is not None:
+                target = self.by_key.get(mapped)
+            if target is None:
+                target = self.requested
+            if target is None:
+                self.log(f"Grant handle=0x{handle16:04x} with no attributable file - ignoring")
+                return
+            if self.stream is not None:
+                self.log(f"Grant handle=0x{handle16:04x} while a stream is active - ignoring")
+                return
+            if target is self.requested:
+                self.requested = None
+                self.deadline = None
+            else:
+                key = (target.id1, target.id2)
+                self.pending = [f for f in self.pending if (f.id1, f.id2) != key]
+                self.failed = [(f, r) for f, r in self.failed if (f.id1, f.id2) != key]
+            self.start_stream(target, handle16)
+            return
         if self.requested is None:
             self.log(f"FileResponse without pending request: {event}")
             return
-        status = event.get("status")
-        handle16 = event.get("handle")
-        if status != 0 or handle16 is None:
-            self.failed.append((self.requested, f"status={status}"))
-            self.log(f"File request failed: status={status} for {self.requested.describe()}")
-            self.requested = None
-            self.advance()
-            return
+        self.failed.append((self.requested, f"status={status}"))
+        self.log(f"File request failed: status={status} for {self.requested.describe()}")
+        self.requested = None
+        self.deadline = None
+        self.advance()
+
+    def start_stream(self, sync_file: SyncFile, handle16: int) -> None:
+        self.seen_handles.add(handle16)
         service_id = next(
             (sid for sid in FILE_TRANSFER_SERVICE_IDS if sid not in self.used_service_ids),
             None,
@@ -355,8 +470,7 @@ class FileSyncV2:
             self.used_service_ids.clear()
             service_id = FILE_TRANSFER_SERVICE_IDS[0]
         self.used_service_ids.add(service_id)
-        self.stream = StreamState(file=self.requested, handle16=handle16, service_id=service_id)
-        self.requested = None
+        self.stream = StreamState(file=sync_file, handle16=handle16, service_id=service_id)
         self.log(f"File granted, stream handle=0x{handle16:04x}; registering ML service 0x{service_id:04x}")
         from .multilink import build_register_request
 
@@ -369,7 +483,7 @@ class FileSyncV2:
 
     def on_register_ok(self, service_id: int, ml_handle: int) -> None:
         stream = self.stream
-        if stream is None or service_id != stream.service_id:
+        if stream is None or service_id != stream.service_id or stream.ml_handle is not None:
             return
         stream.ml_handle = ml_handle
         self.log(f"Stream service registered (handle {ml_handle}); opening stream 0x{stream.handle16:04x}")
@@ -404,9 +518,11 @@ class FileSyncV2:
             return
         data = inflate(raw)
         if data is None:
-            self.log("Inflate failed; keeping compressed bytes")
+            self.log("Inflate failed; discarding")
             self.failed.append((stream.file, "inflate failed"))
-            self.completed.append((stream.file, raw))
+        elif not is_fit(data):
+            self.log(f"Inflated {len(data)}B but not a FIT file; discarding")
+            self.failed.append((stream.file, "not a FIT file"))
         else:
             self.log(f"Inflated to {len(data)}B")
             self.completed.append((stream.file, data))

@@ -120,6 +120,7 @@ arrive as compact `0x2b`/`0x2c` frames (protobuf after 14 header bytes).
 | 2 | FileResponse `{status:1 (0=OK, 3=error), handle:3}` |
 | 9 | FileListRequest `{cursor_id:1, start_page_id:2, flags1:4, flags2:5}` |
 | 10 | FileListResponse `{cursor_id:2, next_page_id:3, file:4 (repeated)}` |
+| 5 | Grant notification `{file:1 {id:FileId}, handle:2}` — observed on the HRM 600, not in the Gadgetbridge proto |
 | 12 | NewFileNotification `{file:1 (repeated)}` |
 | 15 | FileSetFlags `{file:1 FileId, flags:2 FileId}` — marks "synced" |
 
@@ -146,6 +147,22 @@ arrive as compact `0x2b`/`0x2c` frames (protobuf after 14 header bytes).
 - The file id encodes metadata: `id1 >> 32` is a Garmin timestamp (see
   "time model" in the README — trustworthy only for finalized files),
   `id2 & 0xFFFFFFFF` is the file size in bytes.
+- **ACK every complete `0x2c` frame too** (generic status ack
+  `[orig_type:2=5044][ACK]` in a kind-0x00 compact frame): un-ACKed
+  responses — including `FileResponse` grants — are retransmitted every
+  ~5 s. The duplicate grants derail any order-based request/response
+  matching (observed 2026-08-29: streams bound to the wrong files, file
+  contents saved under wrong names).
+- **Bind grants by file id, not by order**: the field-5 grant notification
+  maps `handle -> FileId` authoritatively. Deduplicate grants by handle;
+  a `FileRequest` for a file evicted from the round-robin buffer returns
+  `FileResponse.status=3` even though it was just listed.
+- **Files flush during the session**: the current ring buffer is finalized
+  into listable files *while* the sync connection is up
+  (`NewFileNotification`, pages beyond the last listed one). To capture the
+  most recent recording, re-list after the download queue drains
+  (`FileListRequest.start_page_id = last next_page_id`) until a round
+  yields nothing new.
 
 **File content** is not delivered over GFDI but over a dedicated
 Multi-Link service:
