@@ -54,7 +54,9 @@ Live tests need the strap: worn, with no other central connected (watch and
 phone app out of range or Bluetooth off). Order:
 `hrm600 scan` → `info` → `live --duration 60` → `probe-files`.
 Every run logs JSONL to `captures/` (gitignored) — for protocol questions
-look there first (`gfdi_rx` events with `decoded_hex`).
+look there first (`gfdi_rx` events with `decoded_hex`). The console is
+quiet by default (progress display only); `--log-level debug` restores the
+per-frame echo.
 
 ## Open items / current knowledge
 
@@ -106,6 +108,16 @@ look there first (`gfdi_rx` events with `decoded_hex`).
   file evicted from the round-robin buffer; the current recording is
   flushed into listable files during the session → re-list after the
   queue drains. All implemented in `filesync.py` + `cli.run_filetransfer`.
+- **`hrm600 clock` verified against the strap** (2026-08-30,
+  `captures/hrm600-clock-20260830T093026Z.jsonl`): strap clock −0.9 s vs
+  system time. GFDI `CurrentTimeRequest` (5052) is answered with
+  **status=2 UNSUPPORTED** — the strap does not serve the reverse
+  direction (in Gadgetbridge the *device* asks the phone). The working
+  source is the fallback: a `NewFileNotification` during the session pairs
+  the flushed file's `id1>>32` with the system arrival time (±3 s). The
+  flush arrived at t≈142 s, so the 180 s default `--duration` matters;
+  flushes are not guaranteed per session (fresh `FIT_TYPE_32` flushes in
+  only 2 of 6 earlier sync sessions, timing pattern unclear).
 - `decode_heart_rate` (field 1 in field-1013 alerts) is a plausible but
   unverified assumption — field-1013 payloads in the probe log show the
   pattern `08 <hr> 10 00 18 <varint>` (field 1 ≈ 78–80 bpm, plausible).

@@ -360,3 +360,20 @@ def test_next_page_id_is_stored_from_listing() -> None:
     )
     fs.on_gfdi_frame(make_compact_frame(listing))
     assert fs.next_page_id == 1282
+
+
+def test_new_file_notification_records_arrival_time() -> None:
+    client = FakeClient()
+    fs = FileSyncV2(client, log=lambda line: None)
+    notif = smart_with_file_sync(
+        field_len(12, field_len(1, make_file_raw((123 << 32) | 4, 5, 272, 0, "FIT_TYPE_32")))
+    )
+
+    fs.on_gfdi_frame(make_compact_frame(notif))
+
+    assert len(fs.notified) == 1
+    rx_unix, sync_file = fs.notified[0]
+    assert sync_file.id1 >> 32 == 123
+    import time as time_mod
+
+    assert abs(rx_unix - time_mod.time()) < 5.0

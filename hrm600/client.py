@@ -162,7 +162,8 @@ class Hrm600Client:
         self.sent_core_feature_response_ack = False
         self.answered_watch_side_subscribe = False
         self.sent_strap_side_subscribe_requests = False
-        # optional observers (file transfer / file sync)
+        # optional observers (file transfer / file sync / status displays)
+        self.on_event: Any = None
         self.on_gfdi_frame: Any = None
         self.on_register_ok: Any = None
         self.on_service_payload: Any = None
@@ -176,6 +177,11 @@ class Hrm600Client:
         event.setdefault("t", self.now())
         self.recorder.write(event)
         self.counts[event.get("kind", "unknown")] += 1
+        if self.on_event is not None:
+            try:
+                self.on_event(event)
+            except Exception:
+                pass
         if line is not None and not self.quiet:
             print(f"{event['t']:7.2f}s  {line}", flush=True)
 

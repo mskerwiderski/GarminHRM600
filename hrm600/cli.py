@@ -9,6 +9,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from bleak import BleakClient, BleakScanner
 
@@ -65,6 +66,8 @@ async def cmd_live(args: argparse.Namespace) -> None:
         except NotImplementedError:
             pass
 
+    verbose, show_progress = console_mode(args)
+
     async with BleakClient(target, timeout=args.connect_timeout, pair=args.pair) as bleak_client:
         client = Hrm600Client(
             bleak_client,
@@ -75,14 +78,32 @@ async def cmd_live(args: argparse.Namespace) -> None:
             grade_pct=args.grade_pct,
             run_input_count=args.run_input_count,
             run_input_period=args.run_input_period,
+            quiet=not verbose,
         )
+
+        status: dict[str, Any] = {}
+
+        def on_event(event: dict[str, Any]) -> None:
+            kind = event.get("kind")
+            if kind in ("standard_hr", "realtime_hr") and event.get("heart_rate_bpm"):
+                status["hr"] = event["heart_rate_bpm"]
+            elif kind == "standard_rsc":
+                status["speed"] = event.get("speed_mps")
+                status["cadence"] = event.get("cadence_spm")
+            elif kind == "battery":
+                status["battery"] = event.get("level_pct")
+
+        if show_progress:
+            client.on_event = on_event
+
         await client.start()
         await client.register_multilink_services(args.services)
         if not args.passive:
             await client.send_initial_watch_events()
 
         print(f"# Listening {args.duration:.1f}s. Ctrl-C stops early.", file=sys.stderr)
-        end = time.monotonic() + args.duration
+        started = time.monotonic()
+        end = started + args.duration
         last_action_at = 0.0
         try:
             while time.monotonic() < end and not stop.is_set():
@@ -90,8 +111,25 @@ async def cmd_live(args: argparse.Namespace) -> None:
                     await client.pump_pending_actions()
                     await client.pump_run_inputs()
                     last_action_at = time.monotonic()
+                if show_progress:
+                    spinner = PROGRESS_SPINNER[int(time.monotonic() * 5) % len(PROGRESS_SPINNER)]
+                    parts = [f"HR {status.get('hr', '--')} bpm"]
+                    if status.get("speed") is not None:
+                        parts.append(f"{status['speed']:.2f} m/s")
+                    if status.get("cadence") is not None:
+                        parts.append(f"{status['cadence']:.0f} spm")
+                    if status.get("battery") is not None:
+                        parts.append(f"bat {status['battery']}%")
+                    parts.append(f"events {sum(client.counts.values())}")
+                    elapsed = time.monotonic() - started
+                    render_status(
+                        f"{spinner} live  " + "   ".join(parts)
+                        + f"   {int(elapsed)}/{int(args.duration)}s"
+                    )
                 await asyncio.sleep(0.05)
         finally:
+            if show_progress:
+                clear_progress()
             await client.stop()
 
         print("# Counts:", file=sys.stderr)
@@ -105,8 +143,14 @@ async def run_filetransfer(
     skip_existing: bool = False,
 ) -> None:
     out_path = args.out or default_out_path("hrm600-sync" if download else "hrm600-probe")
+    verbose, show_progress = console_mode(args)
     target = await resolve_target(args.address, args.name_regex, args.scan_timeout)
     print(f"# Log: {out_path}", file=sys.stderr)
+
+    def say(message: str, **kwargs: Any) -> None:
+        if show_progress:
+            clear_progress()
+        print(message, **kwargs)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -117,7 +161,8 @@ async def run_filetransfer(
             pass
 
     async with BleakClient(target, timeout=args.connect_timeout, pair=args.pair) as bleak_client:
-        client = Hrm600Client(bleak_client, out_path, watch_init=not args.no_bootstrap)
+        client = Hrm600Client(bleak_client, out_path, watch_init=not args.no_bootstrap,
+                              quiet=not verbose)
 
         def note(line: str) -> None:
             client.emit({"kind": "filesync", "note": line}, f"[FS] {line}")
@@ -138,10 +183,13 @@ async def run_filetransfer(
         if not args.no_bootstrap:
             await client.send_initial_watch_events()
 
-        print(f"# Waiting {args.settle:.0f}s for bootstrap before file sync...", file=sys.stderr)
-        end = time.monotonic() + args.duration
-        probe_at = time.monotonic() + args.settle
+        if not show_progress:
+            print(f"# Waiting {args.settle:.0f}s for bootstrap before file sync...", file=sys.stderr)
+        started = time.monotonic()
+        end = started + args.duration
+        probe_at = started + args.settle
         probe_fired = False
+        queued_total = 0
         listing_printed = False
         queued_downloads = False
         idle_since: float | None = None
@@ -153,6 +201,7 @@ async def run_filetransfer(
 
         def queue_new_wanted() -> int:
             """Queue listed/notified files not yet attempted or cached."""
+            nonlocal queued_total
             wanted = []
             for f in fs.files:
                 key = (f.id1, f.id2)
@@ -166,7 +215,8 @@ async def run_filetransfer(
                 attempted.add(key)
                 wanted.append(f)
             if wanted:
-                print(f"# Downloading {len(wanted)} file(s)...", file=sys.stderr)
+                say(f"# Downloading {len(wanted)} file(s)...", file=sys.stderr)
+                queued_total += len(wanted)
                 fs.queue_downloads(wanted)
             return len(wanted)
 
@@ -188,10 +238,12 @@ async def run_filetransfer(
                     fs.tick()
                     if fs.listing_complete and not listing_printed:
                         listing_printed = True
-                        print(f"\n# File list: {len(fs.files)} file(s)")
-                        for f in fs.files:
-                            print(f"  {f.describe()}")
-                        print()
+                        say(f"# File list: {len(fs.files)} file(s)")
+                        # the full listing is the point of probe-files; for
+                        # sync/export it is debug detail
+                        if not download or verbose:
+                            for f in fs.files:
+                                print(f"  {f.describe()}")
                         if download:
                             queue_new_wanted()
                             queued_downloads = True
@@ -208,7 +260,8 @@ async def run_filetransfer(
                             finished = False
                         elif listing_round + 1 < max_listing_rounds and not relist_exhausted:
                             listing_round += 1
-                            print(f"# Re-listing (round {listing_round})...", file=sys.stderr)
+                            if verbose:
+                                print(f"# Re-listing (round {listing_round})...", file=sys.stderr)
                             fs.listing_complete = False
                             listing_printed = True  # don't reprint the full list
                             fs.request_file_list(
@@ -221,7 +274,7 @@ async def run_filetransfer(
                 else:
                     if ft_classic.directory is not None and not listing_printed:
                         listing_printed = True
-                        print(f"\n# FIT directory: {len(ft_classic.directory)} entries")
+                        say(f"# FIT directory: {len(ft_classic.directory)} entries")
                         for entry in ft_classic.directory:
                             print(f"  {entry.describe()}")
                     finished = listing_printed
@@ -233,8 +286,20 @@ async def run_filetransfer(
                         break
                 else:
                     idle_since = None
+                if show_progress:
+                    if not probe_fired:
+                        render_progress("bootstrapping watch emulation", now - started, args.duration)
+                    elif fs is not None and download and queued_total:
+                        done = len(fs.completed) + len(fs.failed)
+                        render_progress("downloading files", done, queued_total, unit=" files")
+                    elif fs is not None and not fs.listing_complete:
+                        render_progress("listing files", now - started, args.duration)
+                    else:
+                        render_progress("waiting for the strap", now - started, args.duration)
                 await asyncio.sleep(0.05)
         finally:
+            if show_progress:
+                clear_progress()
             await client.stop()
 
         if not listing_printed:
@@ -248,10 +313,171 @@ async def run_filetransfer(
                 for sync_file, data in fs.completed:
                     path = out_dir / sync_file.filename()
                     path.write_bytes(data)
-                    print(f"# Saved {path} ({len(data)}B)")
-        print("# Counts:", file=sys.stderr)
-        for kind, count in client.counts.most_common():
-            print(f"#   {kind}: {count}", file=sys.stderr)
+                    if verbose:
+                        print(f"# Saved {path} ({len(data)}B)")
+                print(f"# Saved {len(fs.completed)} file(s) to {args.out_dir}/")
+        if verbose:
+            print("# Counts:", file=sys.stderr)
+            for kind, count in client.counts.most_common():
+                print(f"#   {kind}: {count}", file=sys.stderr)
+
+
+PROGRESS_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def console_mode(args: argparse.Namespace) -> tuple[bool, bool]:
+    """(verbose, show_progress) from --log-level and whether stderr is a TTY."""
+    verbose = getattr(args, "log_level", "debug") == "debug"
+    return verbose, not verbose and sys.stderr.isatty()
+
+
+def render_status(text: str) -> None:
+    sys.stderr.write(f"\r\x1b[K{text}")
+    sys.stderr.flush()
+
+
+def render_progress(phase: str, done: float, total: float, unit: str = "s") -> None:
+    width = 20
+    filled = int(min(1.0, done / total) * width) if total else 0
+    spinner = PROGRESS_SPINNER[int(time.monotonic() * 5) % len(PROGRESS_SPINNER)]
+    bar = "█" * filled + "░" * (width - filled)
+    render_status(f"{spinner} {phase:<36s} [{bar}] {int(done):3d}/{int(total)}{unit} ")
+
+
+def clear_progress() -> None:
+    sys.stderr.write("\r\x1b[K")
+    sys.stderr.flush()
+
+
+def clock_deviation_line(source: str, garmin_ts: int, rx_unix: float) -> str | None:
+    """Format one strap-clock measurement; None if the timestamp is implausible.
+
+    Positive deviation = the strap's clock runs ahead of the system clock.
+    """
+    from .filetransfer import GARMIN_TIME_EPOCH
+
+    if garmin_ts == 0:
+        return None
+    strap_unix = garmin_ts + GARMIN_TIME_EPOCH
+    deviation = strap_unix - rx_unix
+    if abs(deviation) > 86400:  # ring-buffer slot reuse yields bogus id times
+        return None
+    strap = datetime.fromtimestamp(strap_unix, tz=timezone.utc)
+    system = datetime.fromtimestamp(rx_unix, tz=timezone.utc)
+    return (
+        f"strap {strap:%Y-%m-%d %H:%M:%S}Z  system {system:%H:%M:%S}Z"
+        f"  ->  strap clock {deviation:+.1f}s  [{source}]"
+    )
+
+
+async def cmd_clock(args: argparse.Namespace) -> None:
+    from .gfdi import build_current_time_request, parse_current_time_response
+
+    out_path = args.out or default_out_path("hrm600-clock")
+    target = await resolve_target(args.address, args.name_regex, args.scan_timeout)
+    print(f"# Log: {out_path}", file=sys.stderr)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
+
+    # (source, garmin_ts, unix arrival time)
+    measurements: list[tuple[str, int, float]] = []
+    verbose, show_progress = console_mode(args)
+
+    async with BleakClient(target, timeout=args.connect_timeout, pair=args.pair) as bleak_client:
+        client = Hrm600Client(
+            bleak_client, out_path, watch_init=not args.no_bootstrap, quiet=not verbose
+        )
+
+        def note(line: str) -> None:
+            client.emit({"kind": "filesync", "note": line}, f"[FS] {line}")
+
+        fs = FileSyncV2(client, log=note)
+
+        def on_gfdi_frame(parsed: dict) -> None:
+            if parsed["type_id"] == 5000:
+                ct = parse_current_time_response(parsed["body"])
+                if ct is not None:
+                    if ct.get("garmin_ts"):
+                        measurements.append(("CurrentTimeRequest answer", ct["garmin_ts"], time.time()))
+                    else:
+                        note(f"CurrentTimeRequest rejected: status={ct['status']}")
+            fs.on_gfdi_frame(parsed)
+
+        client.on_gfdi_frame = on_gfdi_frame
+        client.on_register_ok = fs.on_register_ok
+        client.on_service_payload = fs.on_service_payload
+        client.on_service_close = fs.on_service_close
+
+        await client.start()
+        await client.register_multilink_services([6, 1])
+        if not args.no_bootstrap:
+            await client.send_initial_watch_events()
+
+        if not show_progress:
+            print(f"# Waiting {args.settle:.0f}s for bootstrap, then up to "
+                  f"{args.duration:.0f}s for a fresh strap timestamp...", file=sys.stderr)
+        started = time.monotonic()
+        end = started + args.duration
+        probe_at = started + args.settle
+        probe_fired = False
+        notified_seen = 0
+        printed = 0
+        try:
+            while time.monotonic() < end and not stop.is_set():
+                await client.pump_pending_actions()
+                fs.tick()
+                if not probe_fired and time.monotonic() >= probe_at:
+                    probe_fired = True
+                    client.enqueue_gfdi("CurrentTimeRequest", build_current_time_request())
+                    if args.sync_ready:
+                        client.enqueue_gfdi("SystemEvent SYNC_READY", build_system_event("SYNC_READY"))
+                    fs.request_file_list()
+                while notified_seen < len(fs.notified):
+                    rx_unix, sync_file = fs.notified[notified_seen]
+                    notified_seen += 1
+                    measurements.append(("fresh file flush", sync_file.id1 >> 32, rx_unix))
+                got_valid = False
+                while printed < len(measurements):
+                    line = clock_deviation_line(*measurements[printed])
+                    printed += 1
+                    if show_progress:
+                        clear_progress()
+                    if line is None:
+                        print("# Implausible timestamp ignored "
+                              f"({measurements[printed - 1][0]})", file=sys.stderr)
+                    else:
+                        print(line)
+                        got_valid = True
+                if got_valid:
+                    break
+                if show_progress:
+                    phase = (
+                        "waiting for a fresh strap timestamp" if probe_fired
+                        else "bootstrapping watch emulation"
+                    )
+                    render_progress(phase, time.monotonic() - started, args.duration)
+                await asyncio.sleep(0.05)
+        finally:
+            if show_progress:
+                clear_progress()
+            await client.stop()
+
+    if not any(clock_deviation_line(*m) for m in measurements):
+        from .filetransfer import garmin_ts_to_datetime
+
+        newest = max((f.id1 >> 32 for f in fs.files), default=0)
+        if newest:
+            print(f"# Newest listed file timestamp: {garmin_ts_to_datetime(newest)} "
+                  "(stale - not usable as a clock reading)")
+        print("# No fresh strap timestamp observed. The strap only reveals its "
+              "clock when it answers a CurrentTimeRequest or flushes a file; "
+              "retry with a longer --duration or right after wearing the strap.")
 
 
 async def cmd_probe_files(args: argparse.Namespace) -> None:
@@ -374,6 +600,9 @@ def add_connect_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scan-timeout", type=float, default=8.0)
     parser.add_argument("--connect-timeout", type=float, default=20.0)
     parser.add_argument("--pair", action="store_true", help="ask Bleak to pair if the backend supports it")
+    parser.add_argument("--log-level", choices=["info", "debug"], default="info",
+                        help="info: progress display and results only; debug: echo every "
+                             "frame (the JSONL log always records everything)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -424,6 +653,22 @@ def build_parser() -> argparse.ArgumentParser:
                        help="list already-synced files too (omit the 0xa5a5 exclusion flags)")
         p.add_argument("--classic", action="store_true",
                        help="use the classic GFDI file transfer (known UNSUPPORTED on HRM 600)")
+
+    p_clock = sub.add_parser(
+        "clock",
+        help="measure how far the strap's clock deviates from the system clock",
+    )
+    add_connect_args(p_clock)
+    p_clock.add_argument("--duration", type=float, default=180.0,
+                         help="max seconds to wait for a fresh strap timestamp")
+    p_clock.add_argument("--settle", type=float, default=8.0,
+                         help="seconds to let the watch-emulation bootstrap finish first")
+    p_clock.add_argument("--out", type=Path, default=None, help="JSONL log path")
+    p_clock.add_argument("--no-bootstrap", action="store_true",
+                         help="skip the watch-emulation bootstrap before probing")
+    p_clock.add_argument("--no-sync-ready", dest="sync_ready", action="store_false",
+                         help="do not send the SYNC_READY system event")
+    p_clock.set_defaults(func=cmd_clock)
 
     p_probe = sub.add_parser("probe-files", help="list the strap's files via the protobuf file sync")
     add_filetransfer_args(p_probe)

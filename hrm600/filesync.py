@@ -219,6 +219,7 @@ class FileSyncV2:
         self.client = client
         self.log = log
         self.files: list[SyncFile] = []
+        self.notified: list[tuple[float, SyncFile]] = []  # (unix arrival time, file)
         self.listing_complete = False
         self.next_page_id: int | None = None
         self.pending: list[SyncFile] = []
@@ -389,9 +390,11 @@ class FileSyncV2:
                 self.listing_complete = True
         elif kind == "new_file_notification":
             self.register_files(event["files"])
+            now = time.time()
             for f in event["files"]:
                 self.log(f"New file notification: {f.describe()}")
                 self.files.append(f)
+                self.notified.append((now, f))
         elif kind == "grant_notification":
             self.on_grant_notification(event)
         elif kind == "file_response":

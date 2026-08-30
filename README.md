@@ -63,7 +63,12 @@ connection, add `--pair` to bond.
 | `hrm600 sync` | List and download the strap's FIT files into `downloads/`. |
 | `hrm600 decode` | Decode downloaded FIT files into an absolute HR time series / CSV. |
 | `hrm600 export` | One-shot: download buffer → cut a time window (UTC, or local with `--local`) → CSV + statistics. |
+| `hrm600 clock` | Measure how far the strap's clock deviates from the system clock (positive = strap ahead). |
 | `hrm600 probe-files` | R&D command: probe the file transfer surface, log every raw frame. |
+
+All BLE commands show a progress display (or a live status line) and only
+the results by default; `--log-level debug` echoes every frame on the
+console. The JSONL log in `captures/` always records everything either way.
 
 ### Examples
 
@@ -145,6 +150,14 @@ maps the event clock to absolute time (observed stable to sub-seconds over
 weeks). Ring-buffer files carry flush timestamps instead, and reused slots
 can carry entirely wrong ids, so `C` is calibrated as the largest consistent
 cluster across all files rather than trusted per file.
+
+`hrm600 clock` measures the strap clock against the system clock: when the
+strap flushes a file during the session, the file id's timestamp is
+compared against the arrival time of the flush notification (accuracy
+roughly ±3 s; the strap flushes only occasionally, so the command may need
+its full `--duration` or a retry). A GFDI `CurrentTimeRequest` (5052) is
+also sent first, but the strap answers it with UNSUPPORTED — it only
+*receives* time, it does not serve it.
 
 ## Project layout
 

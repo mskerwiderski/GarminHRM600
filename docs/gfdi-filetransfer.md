@@ -30,6 +30,7 @@ stream (identical to the live path, see `hrm600/gfdi.py`).
 | 5030 | SYSTEM_EVENT | TX |
 | 5031 | SUPPORTED_FILE_TYPES_REQUEST | TX |
 | 5037 | SYNCHRONIZATION | RX |
+| 5052 | CURRENT_TIME_REQUEST | RX in Gadgetbridge (device asks the phone); the TX direction is answered with UNSUPPORTED (verified 2026-08-30) |
 
 Compact frames (bit 15 set) are mapped by Gadgetbridge to
 `(type & 0xff) + 5000`.

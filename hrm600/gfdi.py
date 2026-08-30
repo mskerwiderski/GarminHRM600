@@ -20,6 +20,7 @@ GFDI_MSG_NAMES = {
     5030: "SYSTEM_EVENT",
     5043: "PROTOBUF_REQUEST",
     5044: "PROTOBUF_RESPONSE",
+    5052: "CURRENT_TIME_REQUEST",
 }
 
 SYSTEM_EVENT_ORDINALS = {
@@ -44,6 +45,33 @@ def build_gfdi_message(type_id: int, body: bytes) -> bytes:
 
 def build_system_event(name: str, value: int = 0) -> bytes:
     return build_gfdi_message(5030, bytes([SYSTEM_EVENT_ORDINALS[name], value & 0xFF]))
+
+
+def build_current_time_request(reference_id: int = 1) -> bytes:
+    """CURRENT_TIME_REQUEST (5052), body = referenceID:4.
+
+    In Gadgetbridge the *device* asks the phone for the time; whether the
+    HRM 600 answers the reverse direction is untested (probe experiment).
+    """
+    return build_gfdi_message(5052, struct.pack("<I", reference_id))
+
+
+def parse_current_time_response(body: bytes) -> dict[str, Any] | None:
+    """RESPONSE (5000) body for a CURRENT_TIME_REQUEST.
+
+    Layout (from Gadgetbridge's central-side response): [orig_type:2=5052]
+    [status:1][reference_id:4][garmin_ts:4][tz_offset_s:4][...transitions].
+    Returns None if the response belongs to another message type.
+    """
+    if len(body) < 3 or struct.unpack("<H", body[:2])[0] != 5052:
+        return None
+    out: dict[str, Any] = {"status": body[2]}
+    if len(body) >= 11:
+        out["reference_id"] = struct.unpack("<I", body[3:7])[0]
+        out["garmin_ts"] = struct.unpack("<I", body[7:11])[0]
+    if len(body) >= 15:
+        out["tz_offset_s"] = struct.unpack("<i", body[11:15])[0]
+    return out
 
 
 def parse_gfdi_message(decoded: bytes) -> dict[str, Any] | None:

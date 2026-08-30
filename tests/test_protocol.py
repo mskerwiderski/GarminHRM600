@@ -192,3 +192,34 @@ def test_watch_device_information_ack_reuses_known_good_capture() -> None:
     assert parsed["crc_ok"] is True
     assert parsed["type_id"] == 5000
     assert b"fenix 8 - 51mm" in parsed["body"]
+
+
+def test_current_time_request_and_response_roundtrip() -> None:
+    from hrm600.gfdi import build_current_time_request, parse_current_time_response
+
+    req = parse_gfdi_message(build_current_time_request(reference_id=7))
+    assert req is not None
+    assert req["crc_ok"] is True
+    assert req["type_id"] == 5052
+    assert req["body"] == b"\x07\x00\x00\x00"
+
+    # response layout per Gadgetbridge: orig:2, status:1, refID:4, ts:4, tz:4
+    import struct
+
+    body = struct.pack("<HBIIi", 5052, 0, 7, 0x44F00D92, 7200)
+    parsed = parse_current_time_response(body)
+    assert parsed == {
+        "status": 0,
+        "reference_id": 7,
+        "garmin_ts": 0x44F00D92,
+        "tz_offset_s": 7200,
+    }
+
+
+def test_current_time_response_rejects_other_message_types() -> None:
+    import struct
+
+    from hrm600.gfdi import parse_current_time_response
+
+    assert parse_current_time_response(struct.pack("<HB", 5004, 0)) is None
+    assert parse_current_time_response(struct.pack("<HB", 5052, 2)) == {"status": 2}
