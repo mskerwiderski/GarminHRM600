@@ -4,13 +4,26 @@ The HRM 600's STORE_AND_FORWARD_HR_DATA_FIT files contain only `hr` messages
 with filtered_bpm samples on the device's event clock (seconds since battery
 insert). Real time is recovered via the file id: for cleanly finalized files
 id1>>32 is the Garmin timestamp of the LAST sample, so
-C = id_ts - ev_last maps the event clock to Garmin time. C is stable to
-sub-second over weeks; files still in the ring buffer carry a flush timestamp
-instead, so C is calibrated from the largest cluster across all files.
+C = id_ts - ev_last maps the event clock to Garmin time. Files still in the
+ring buffer carry a flush timestamp instead, so C is calibrated from the
+largest cluster across all files.
 
 Consecutive files overlap in the ring buffer, so merging them yields the
 same beats twice; samples closer together than MIN_BEAT_INTERVAL_S are
 dropped.
+
+Accuracy of the absolute time axis: the per-file C candidates scatter by
+about +/- 7 s, so the cluster median carries a several-second error that the
+strap files alone cannot resolve. Measured against Garmin activities that
+recorded this same strap (2026-08-21 and 2026-08-23, where the two series
+agree to 0.03 bpm and any residual shift is therefore pure clock): the strap
+runs about 0.105 s/h slow against GPS-disciplined Garmin time - a clean
+linear drift, 29 ppm, residual 0.09 s over 11.8 h - and the offset jumps
+between recording sessions (+6.8 s on 08-21, -1.2 s on 08-23) when the
+strap's clock is resynced. Using each file's own C instead of the median
+does not help: those candidates are as noisy as the error they would fix.
+Second-accurate alignment against another source needs calibration against
+a simultaneous recording of this strap.
 """
 
 from __future__ import annotations
